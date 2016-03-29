@@ -21,7 +21,7 @@ endif
 export DEB_HOST_ARCH      ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
 
 extraopts += --with-ocf --with-rest-bench --with-nss
-extraopts += --with-debug
+#extraopts += --with-debug
 extraopts += --enable-cephfs-java
 
 # rocksdb is not packaged by anyone.  build it if we can.
