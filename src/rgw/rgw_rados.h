@@ -1277,8 +1277,8 @@ public:
                finisher(NULL),
                rest_master_conn(NULL),
                meta_mgr(NULL),
-               data_log(NULL),
-               auth_method(false, false) {}
+               data_log(NULL)
+               {}
 
   uint64_t get_new_req_id() {
     return max_req_id.inc();
@@ -1296,13 +1296,19 @@ public:
     zone_name = name;
   }
 
+
   /* Holds info on whether the request should be
    * validated via EC2 signature or Auth tokens.
-   * Also checks if the action is COPY */
+   * Holds value when the action is COPY
+   * Holds value when the token to be validated is from a presigned URL */
+/*
   class authorization_method {
       private:
           bool _token_validation;
           bool _copy_action;
+          bool _url_type_token;
+          bool _acl_main_override;
+          bool _acl_copy_override;
           string _token;
           string _copy_source;
 
@@ -1339,12 +1345,39 @@ public:
           {
               _copy_source = source;
           }
+          inline bool get_url_type_token()
+          {
+              return _url_type_token;
+          }
+          inline void set_url_type_token(bool val)
+          {
+              _url_type_token = val;
+          }
+          inline bool get_acl_main_override()
+          {
+              return _acl_main_override;
+          }
+          inline void set_acl_main_override(bool val)
+          {
+              _acl_main_override = val;
+          }
+          inline bool get_acl_copy_override()
+          {
+              return _acl_copy_override;
+          }
+          inline void set_acl_copy_override(bool val)
+          {
+              _acl_copy_override = val;
+          }
 
-          authorization_method(bool method, bool action) :
+
+          authorization_method(bool method, bool action, bool url_token) :
               _token_validation(method),
-              _copy_action(action) { }
+              _copy_action(action),
+              _url_type_token(url_token) { }
           ~authorization_method() { }
   } auth_method;
+  */
 
   RGWRegion region;
   RGWZoneParams zone; /* internal zone params, e.g., rados pools */

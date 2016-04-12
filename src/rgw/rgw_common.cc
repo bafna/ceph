@@ -146,7 +146,8 @@ void req_info::rebuild_from(req_info& src)
 
 req_state::req_state(CephContext *_cct, class RGWEnv *e) : cct(_cct), cio(NULL), op(OP_UNKNOWN),
 							   has_acl_header(false),
-                                                           os_auth_token(NULL), info(_cct, e)
+                                                           os_auth_token(NULL), info(_cct, e),
+                                                           auth_method(false, false, false, false, false)
 {
   enable_ops_log = e->conf->enable_ops_log;
   enable_usage_log = e->conf->enable_usage_log;

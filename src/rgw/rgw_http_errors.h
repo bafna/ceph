@@ -41,7 +41,7 @@ const static struct rgw_http_errors RGW_HTTP_ERRORS[] = {
     { EACCES, 403, "AccessDenied", "Access Denied"},
     { EPERM, 403, "AccessDenied", "Access Denied"},
     { ERR_SIGNATURE_NO_MATCH, 403, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided."},
-    { ERR_INVALID_ACCESS_KEY, 403, "InvalidAccessKeyId", "The access key Id you provided does not exist in our records."},
+    { ERR_INVALID_ACCESS_KEY, 403, "AccessDenied", "The access key Id you provided does not exist in our records."},
     { ERR_USER_SUSPENDED, 403, "UserSuspended" },
     { ERR_REQUEST_TIME_SKEWED, 403, "RequestTimeTooSkewed" ,"The difference between the request time and the server's time is too large."},
     { ERR_QUOTA_EXCEEDED, 403, "QuotaExceeded" },

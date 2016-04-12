@@ -59,6 +59,7 @@ vgcore.*
 /config.*
 /Makefile
 /tags
+/src/vstart.sh
 
 # temporary directory used by e.g. "make distcheck", e.g. ceph-0.42
 /ceph-[0-9]*/

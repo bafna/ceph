@@ -537,12 +537,11 @@ static void godown_alarm(int signum)
 static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWClientIO *client_io, OpsLogSocket *olog)
 {
   int ret = 0;
-
+  bool acl_main_override = false;
   client_io->init(g_ceph_context);
 
   req->log_init();
 
-  
   perfcounter->inc(l_rgw_req);
 
   RGWEnv& rgw_env = client_io->get_env();
@@ -558,6 +557,41 @@ static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWC
   s->trans_id = store->unique_trans_id(req->id);
   dout(1) << "====== starting new request trans="  << s->trans_id.c_str() << " =====" << dendl;
   //req->log_format(s, "initializing for trans_id = %s", s->trans_id.c_str());
+
+  /* Logic for checking whether the request is token based or signature based */
+  const char* token_value = s->info.env->get("HTTP_X_AUTH_TOKEN");
+  if(token_value != NULL) {
+    // This request has a token not EC2 credentials
+    (s->auth_method).set_token_validation(true);
+    // Fill the token string even if it is blank
+    // Keystone will handle the rest
+    string value_str(token_value);
+    (s->auth_method).set_token(value_str);
+  }
+  dout(1) << "DSS INFO: token validation set to: " << (s->auth_method).get_token_validation() << dendl;
+
+  const char* amz_metadata_directive = s->info.env->get("HTTP_X_AMZ_METADATA_DIRECTIVE");
+  const char* jcs_metadata_directive = s->info.env->get("HTTP_X_JCS_METADATA_DIRECTIVE");
+  const char* amz_copy_source = s->info.env->get("HTTP_X_AMZ_COPY_SOURCE");
+  const char* jcs_copy_source = s->info.env->get("HTTP_X_JCS_COPY_SOURCE");
+
+  if(
+      (
+        (amz_metadata_directive != NULL && !strcmp(amz_metadata_directive, "COPY")) 
+        || (jcs_metadata_directive != NULL && !strcmp(jcs_metadata_directive, "COPY"))
+      ) 
+      &&
+      (amz_copy_source != NULL || jcs_copy_source != NULL)
+    ) {
+    (s->auth_method).set_copy_action(true);
+    if(amz_copy_source != NULL) {
+       (s->auth_method).set_copy_source(amz_copy_source);
+    }
+    if(jcs_copy_source != NULL) {
+       (s->auth_method).set_copy_source(jcs_copy_source);
+    }
+  }
+
 
   RGWOp *op = NULL;
   int init_error = 0;
@@ -592,6 +626,8 @@ static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWC
     abort_early(s, op, -ERR_USER_SUSPENDED);
     goto done;
   }
+
+  // This reads the ACL on the bucket or object
   req->log(s, "reading permissions");
   ret = handler->read_permissions(op);
   if (ret < 0) {
@@ -599,6 +635,7 @@ static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWC
     goto done;
   }
 
+  // This basically looks into quotas associated with users
   req->log(s, "init op");
   ret = op->init_processing();
   if (ret < 0) {
@@ -614,10 +651,13 @@ static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWC
   }
 
   req->log(s, "verifying op permissions");
+  acl_main_override = (s->auth_method).get_acl_main_override();
   ret = op->verify_permission();
   if (ret < 0) {
     if (s->system_request) {
       dout(2) << "overriding permissions due to system operation" << dendl;
+    } else if (acl_main_override && (ret != -ERR_BUCKET_ALREADY_OWNED)) { //<<<<<<
+      dout(0) << "DSS INFO: ACL decision will be overriden" << dendl;
     } else {
       abort_early(s, op, ret);
       goto done;
@@ -714,20 +754,36 @@ static int civetweb_callback(struct mg_connection *conn) {
   RGWRados *store = pe->store;
   RGWREST *rest = pe->rest;
   OpsLogSocket *olog = pe->olog;
-              
-  (store->auth_method).set_token_validation(false);
 
+ /*
+ (store->auth_method).set_token_validation(false);
+  (store->auth_method).set_copy_action(false);
+  (store->auth_method).set_url_type_token(false);
+  (store->auth_method).set_acl_main_override(false);
+  (store->auth_method).set_acl_copy_override(false);
+*/
   /* Go through all the headers to find out if the authentication
    * method required is EC2 signature or tokens.
    * While there can be at most 100 header fields in a HTTP request,
    * http_headers is an array of size 64 elements inside civetweb */
-  for (int i = 0; i < 64; i++) {
+
+  dout(1) << "DSS INFO: Num headers is: " << req_info->num_headers << dendl;
+  for (int i = 0; i < req_info->num_headers; i++) {
       if ((req_info->http_headers[i]).name != NULL) {
           string name_str((req_info->http_headers[i]).name);
           string value_str((req_info->http_headers[i]).value);
+
+          // Avoid garbage in headers
+          if ((name_str.compare("") == 0) &&
+              (value_str.compare("") == 0)) {
+              dout(1) << "DSS INFO: Terminating headers loop" << dendl;
+              break;
+          }
+
           dout(1) << "DSS INFO: CIVETWEB HEADER NAME: " << name_str << dendl;
           dout(1) << "DSS INFO: CIVETWEB HEADER VALUE: " << value_str << dendl;
 
+        /*
           if (name_str.compare("X-Auth-Token") == 0) {
               // This request has a token not EC2 credentials
               (store->auth_method).set_token_validation(true);
@@ -735,6 +791,7 @@ static int civetweb_callback(struct mg_connection *conn) {
               // Keystone will handle the rest
               (store->auth_method).set_token(value_str);
           }
+          
           if (
              (((name_str.compare("x-amz-metadata-directive") == 0)
              || (name_str.compare("x-jcs-metadata-directive")))
@@ -750,9 +807,10 @@ static int civetweb_callback(struct mg_connection *conn) {
                   (store->auth_method).set_copy_source(value_str);
               }
           }
+          */
       }
   }
-  dout(1) << "DSS INFO: token validation set to: " << (store->auth_method).get_token_validation() << dendl;
+  //dout(1) << "DSS INFO: token validation set to: " << (store->auth_method).get_token_validation() << dendl;
 
   RGWRequest *req = new RGWRequest(store->get_new_req_id());
   RGWMongoose client_io(conn, pe->port);

@@ -53,6 +53,9 @@ if [ ! -x "$RADOSGW" ]; then
     exit 1
 fi
 
+#increase open files limit, the logic below for the same does not work for ubuntu
+ulimit -n 32768
+
 # list daemons, old-style and new-style
 # NOTE: no support for cluster names that aren't "ceph"
 dlist=`ceph-conf --list-sections $PREFIX`

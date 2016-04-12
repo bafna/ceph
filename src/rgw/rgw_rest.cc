@@ -299,7 +299,9 @@ void set_req_state_err(struct req_state *s, int err_no)
     s->err.http_ret = r->http_ret;
     s->err.s3_code = r->s3_code;
       if (r->s3_err_message) {
+          if ((s->err.message).empty()) {
 		s->err.message = r->s3_err_message;	
+          }
       }
     return;
   }
@@ -543,21 +545,44 @@ void end_header(struct req_state *s, RGWOp *op, const char *content_type, const 
 
   RGWObjectCtx* obj_ctx = (RGWObjectCtx*) s->obj_ctx;
   bool is_send_cors_headers =  s->cct->_conf->rgw_enable_cors_response_headers;
-  bool is_token_based_request = obj_ctx->store->auth_method.get_token_validation();
+  bool is_token_based_request = s->auth_method.get_token_validation();
   bool is_request_successful = !(s->err.is_err());
   bool is_options_request = (s->op == OP_OPTIONS);
   bool is_get_request = (s->op == OP_GET);
+  char *allowed_origins = new char[s->cct->_conf->rgw_cors_allowed_origin.length() + 1];
+  strcpy(allowed_origins, s->cct->_conf->rgw_cors_allowed_origin.c_str());
+  const char *orig = s->info.env->get("HTTP_ORIGIN");
+  string response_origin = "";
+  if(!orig) {
+    ldout(s->cct, 0) << "WARNING: ORIGIN header not set in preflight request, will not send CORS headers" << dendl;
+  } else {
+    // split the allowed_origins 
+    char *savedptr;
+    char *tok = strtok_r(allowed_origins, ", ", &savedptr);
+    while(tok != NULL) {
+      if(!strcmp(orig, tok)) {
+        // match
+        response_origin = tok;
+      }
+      tok = strtok_r(NULL, ", ", &savedptr);
+    }
+    if(!strcmp(response_origin.c_str(), "")) {
+      ldout(s->cct, 0) << "WARNING: No matching allowed origin found in config, check ORIGIN header, will not send CORS headers" << dendl;
+    }
+  }
+      
+
   if((is_send_cors_headers && is_request_successful) &&  (is_token_based_request || is_options_request)) {
-    string allowed_origins = s->cct->_conf->rgw_cors_allowed_origin;
     string allowed_methods = s->cct->_conf->rgw_cors_allowed_methods; 
     string allowed_headers = s->cct->_conf->rgw_cors_allowed_headers; 
-    dump_access_control_for_console(s, allowed_origins.c_str(), allowed_methods.c_str(), allowed_headers.c_str());
+    dump_access_control_for_console(s, response_origin.c_str(), allowed_methods.c_str(), allowed_headers.c_str());
     if(is_get_request) {
         string content_disposition_header = s->cct->_conf->rgw_cors_content_disposition_header;
         string content_disposition_header_value = s->cct->_conf->rgw_cors_content_disposition_header_value;
         s->cio->print("%s: %s\r\n", content_disposition_header.c_str(), content_disposition_header_value.c_str());
     }
   }
+  delete [] allowed_origins;
 
 
   if (s->prot_flags & RGW_REST_SWIFT && !content_type) {

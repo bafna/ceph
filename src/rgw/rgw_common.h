@@ -993,6 +993,90 @@ inline ostream& operator<<(ostream& out, const rgw_obj_key &o) {
   }
 }
 
+/* Holds info on whether the request should be
+ * validated via EC2 signature or Auth tokens.
+ * Holds value when the action is COPY
+ * Holds value when the token to be validated is from a presigned URL */
+
+class authorization_method {
+  private:
+    bool _token_validation;
+    bool _copy_action;
+    bool _url_type_token;
+    bool _acl_main_override;
+    bool _acl_copy_override;
+    string _token;
+    string _copy_source;
+
+  public:
+    inline bool get_token_validation()
+    {
+      return _token_validation;
+    }
+    inline void set_token_validation(bool method)
+    {
+      _token_validation = method;
+    }
+    inline string get_token()
+    {
+      return _token;
+    }
+    inline void set_token(string tok)
+    {
+      _token = tok;
+    }
+    inline bool get_copy_action()
+    {
+      return _copy_action;
+    }
+    inline void set_copy_action(bool action)
+    {
+      _copy_action = action;
+    }
+    inline string get_copy_source()
+    {
+      return _copy_source;
+    }
+    inline void set_copy_source(string source)
+    {
+      _copy_source = source;
+    }
+    inline bool get_url_type_token()
+    {
+      return _url_type_token;
+    }
+    inline void set_url_type_token(bool val)
+    {
+      _url_type_token = val;
+    }
+    inline bool get_acl_main_override()
+    {
+      return _acl_main_override;
+    }
+    inline void set_acl_main_override(bool val)
+    {
+      _acl_main_override = val;
+    }
+    inline bool get_acl_copy_override()
+    {
+      return _acl_copy_override;
+    }
+    inline void set_acl_copy_override(bool val)
+    {
+      _acl_copy_override = val;
+    }
+
+
+    authorization_method(bool method, bool action, bool url_token, bool acl_main, bool acl_copy) :
+      _token_validation(method),
+      _copy_action(action),
+      _url_type_token(url_token),
+      _acl_main_override(acl_main),
+      _acl_copy_override(acl_copy) { }
+    ~authorization_method() { }
+};
+
+
 /** Store all the state necessary to complete and respond to an HTTP request*/
 struct req_state {
    CephContext *cct;
@@ -1062,6 +1146,8 @@ struct req_state {
    string trans_id;
 
    req_info info;
+  
+   authorization_method auth_method;
 
    req_state(CephContext *_cct, class RGWEnv *e);
    ~req_state();

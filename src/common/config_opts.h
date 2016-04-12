@@ -1061,16 +1061,18 @@ OPTION(rgw_olh_pending_timeout_sec, OPT_INT, 3600) // time until we retire a pen
 OPTION(rgw_user_max_buckets, OPT_U32, 1000) // global option to set max buckets count for all user
 
 OPTION(rgw_enable_cors_response_headers, OPT_BOOL, true) // send cors response headers in case of a token based request
-OPTION(rgw_cors_allowed_origin, OPT_STR, "http://console.staging.jiocloudservices.com") // cors allowed domains
+OPTION(rgw_cors_allowed_origin, OPT_STR, "https://console.jiocloudservices.com, http://console.jiocloudservices.com, http://consolepreprod.jiocloudservices.com, https://consolepreprod.jiocloudservices.com, http://console.staging.jiocloudservices.com, https://console.staging.jiocloudservices.com")// cors allowed domains
 OPTION(rgw_cors_allowed_methods, OPT_STR, "GET, PUT, HEAD, POST, DELETE, COPY, OPTIONS") // cors allowed methods
 OPTION(rgw_cors_allowed_headers, OPT_STR, "X-Auth-Token, Content-Disposition, Content-Type") // cors allowed headers
 OPTION(rgw_cors_content_disposition_header, OPT_STR, "Content-Disposition") // cors content disposition HEADER
 OPTION(rgw_cors_content_disposition_header_value, OPT_STR, "attachment") // cors content disposition HEADER value
 OPTION(rgw_enable_token_based_presigned_url, OPT_BOOL, true) // enable token based presigned url
 
-OPTION(rgw_disable_acl_api, OPT_BOOL, "true")             // disable all acl getters and setters
+OPTION(rgw_disable_acl_api, OPT_BOOL, true)             // disable all acl getters and setters
 OPTION(rgw_keystone_sign_api, OPT_STR, "v3/sign-auth")    // api to validate signature based authentication requests
 OPTION(rgw_keystone_token_api, OPT_STR, "v3/token-auth")  // api to validate token based authentication requests
+OPTION(rgw_keystone_url_token_api, OPT_STR, "url-auth")   // api to validate presigned token URL based authentication requests
+OPTION(dss_regional_url, OPT_STR, "https://dss.ind-west-1.staging.jiocloudservices.com") // URL to be returned in XMLNS during anonymous list all buckets calls
 
 OPTION(mutex_perf_counter, OPT_BOOL, false) // enable/disable mutex perf counter
 OPTION(throttler_perf_counter, OPT_BOOL, true) // enable/disable throttler perf counter
