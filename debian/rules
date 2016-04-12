@@ -132,20 +132,6 @@ binary-arch: build install
 	dh_lintian -a
 	dh_link -a
 
-	dh_strip -pceph --dbg-package=ceph-dbg
-	dh_strip -pceph-mds --dbg-package=ceph-mds-dbg
-	dh_strip -pceph-fuse --dbg-package=ceph-fuse-dbg
-	dh_strip -prbd-fuse --dbg-package=rbd-fuse-dbg
-	dh_strip -pceph-common --dbg-package=ceph-common-dbg
-	dh_strip -pceph-fs-common --dbg-package=ceph-fs-common-dbg
-	dh_strip -plibrados2 --dbg-package=librados2-dbg
-	dh_strip -plibradosstriper1 --dbg-package=libradosstriper1-dbg
-	dh_strip -plibrbd1 --dbg-package=librbd1-dbg
-	dh_strip -plibcephfs1 --dbg-package=libcephfs1-dbg
-	dh_strip -pradosgw --dbg-package=radosgw-dbg
-	dh_strip -prest-bench --dbg-package=rest-bench-dbg
-	dh_strip -pceph-test --dbg-package=ceph-test-dbg
-
 	dh_compress -a
 	dh_fixperms -a
 	dh_makeshlibs -a
