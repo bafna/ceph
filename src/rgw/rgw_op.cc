@@ -1483,7 +1483,7 @@ void RGWDeleteBucket::execute()
   ret = store->delete_bucket(s->bucket, ot);
 
   if (ret == 0) {
-    ret = rgw_unlink_bucket(store, s->user.user_id, s->bucket.name, false);
+    ret = rgw_unlink_bucket(store, s->bucket_owner_id, s->bucket.name, false);
     if (ret < 0) {
       ldout(s->cct, 0) << "WARNING: failed to unlink bucket: ret=" << ret << dendl;
     }

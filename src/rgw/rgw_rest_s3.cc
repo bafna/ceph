@@ -2824,6 +2824,7 @@ int RGW_Auth_S3::authorize(RGWRados *store, struct req_state *s)
         s->user.user_id = tenant_id_str;
         s->user.display_name = tenant_id_str;
         (s->auth_method).set_acl_main_override(true);
+        s->bucket_owner_id = resource_info.getTenantName();
 
         /* try to store user if it not already exists */
         if (rgw_get_user_info_by_uid(store, keystone_validator.response.token.tenant.id, s->user) < 0) {
@@ -2920,6 +2921,7 @@ int RGW_Auth_S3::authorize(RGWRados *store, struct req_state *s)
         s->user = effective_user;
       }
     }
+    s->bucket_owner_id = s->user.user_id;
 
   } /* if keystone_result < 0 */
 
