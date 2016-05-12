@@ -28,15 +28,15 @@ set -e
 [ -z "$CEPH_NUM_MDS" ] && CEPH_NUM_MDS="$MDS"
 [ -z "$CEPH_NUM_RGW" ] && CEPH_NUM_RGW="$RGW"
 
-[ -z "$CEPH_NUM_MON" ] && CEPH_NUM_MON=3
-[ -z "$CEPH_NUM_OSD" ] && CEPH_NUM_OSD=3
-[ -z "$CEPH_NUM_MDS" ] && CEPH_NUM_MDS=3
+[ -z "$CEPH_NUM_MON" ] && CEPH_NUM_MON=1
+[ -z "$CEPH_NUM_OSD" ] && CEPH_NUM_OSD=4
+[ -z "$CEPH_NUM_MDS" ] && CEPH_NUM_MDS=0
 [ -z "$CEPH_NUM_RGW" ] && CEPH_NUM_RGW=1
 
 [ -z "$CEPH_DIR" ] && CEPH_DIR="$PWD"
 [ -z "$CEPH_DEV_DIR" ] && CEPH_DEV_DIR="$CEPH_DIR/dev"
 [ -z "$CEPH_OUT_DIR" ] && CEPH_OUT_DIR="$CEPH_DIR/out"
-[ -z "$CEPH_RGW_PORT" ] && CEPH_RGW_PORT=8000
+[ -z "$CEPH_RGW_PORT" ] && CEPH_RGW_PORT=8001
 
 extra_conf=""
 new=0
@@ -276,7 +276,7 @@ fi
 # export CEPH_ARGS="--lockdep 1"
 
 if [ -z "$CEPH_PORT" ]; then
-    CEPH_PORT=6789
+    CEPH_PORT=6989
     [ -e ".ceph_port" ] && CEPH_PORT=`cat .ceph_port`
 fi
 
@@ -292,7 +292,7 @@ $SUDO rm -f core*
 
 test -d $CEPH_OUT_DIR || mkdir $CEPH_OUT_DIR
 test -d $CEPH_DEV_DIR || mkdir $CEPH_DEV_DIR
-$SUDO rm -rf $CEPH_OUT_DIR/*
+#$SUDO rm -rf $CEPH_OUT_DIR/*
 test -d gmon && $SUDO rm -rf gmon/*
 
 [ "$cephx" -eq 1 ] && [ "$new" -eq 1 ] && test -e $keyring_fn && rm $keyring_fn
@@ -358,10 +358,13 @@ if [ "$start_mon" -eq 1 ]; then
         osd pool default min size = 1
         osd failsafe full ratio = .99
         mon osd full ratio = .99
+        mon_osd_down_out_interval = 10
         mon data avail warn = 10
         mon data avail crit = 1
         osd pool default erasure code directory = $EC_PATH
         osd pool default erasure code profile = plugin=jerasure technique=reed_sol_van k=2 m=1 ruleset-failure-domain=osd
+        #rgw keystone url=https://iam.ind-west-1.staging.jiocloudservices.com
+        #rgw s3 auth use keystone=True
         rgw frontends = fastcgi, civetweb port=$CEPH_RGW_PORT
         filestore fd cache size = 32
         run dir = $CEPH_OUT_DIR
