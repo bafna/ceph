@@ -1,4 +1,4 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
 // vim: ts=8 sw=2 smarttab
 
 #include <stdlib.h>
@@ -71,7 +71,72 @@
 #include "include/types.h"
 #include "common/BackTrace.h"
 
+#include <stdio.h>
+#include <pthread.h>
+#include <openssl/crypto.h>
+
+
 #define dout_subsys ceph_subsys_rgw
+
+
+#define MUTEX_TYPE       pthread_mutex_t
+#define MUTEX_SETUP(x)   pthread_mutex_init(&(x), NULL)
+#define MUTEX_CLEANUP(x) pthread_mutex_destroy(&(x))
+#define MUTEX_LOCK(x)    pthread_mutex_lock(&(x))
+#define MUTEX_UNLOCK(x)  pthread_mutex_unlock(&(x))
+#define THREAD_ID        pthread_self()
+
+
+
+
+/* This array will store all of the mutexes available to OpenSSL. */
+static MUTEX_TYPE *mutex_buf= NULL;
+
+static void openssl_locking_function(int mode, int n, const char * file, int line)
+{
+  if(mode & CRYPTO_LOCK)
+    MUTEX_LOCK(mutex_buf[n]);
+  else
+    MUTEX_UNLOCK(mutex_buf[n]);
+}
+
+static unsigned long openssl_id_function(void)
+{
+    return ((unsigned long)THREAD_ID);
+}
+
+int openssl_thread_setup(void)
+{
+  int i;
+
+  mutex_buf = (MUTEX_TYPE *) malloc(CRYPTO_num_locks() * sizeof(MUTEX_TYPE));
+  if(!mutex_buf)
+    return 0;
+  for(i = 0;  i < CRYPTO_num_locks();  i++)
+    MUTEX_SETUP(mutex_buf[i]);
+  CRYPTO_set_id_callback(openssl_id_function);
+  CRYPTO_set_locking_callback(openssl_locking_function);
+  return 1;
+}
+
+int openssl_thread_cleanup(void)
+{
+  int i;
+
+  if(!mutex_buf)
+    return 0;
+  CRYPTO_set_id_callback(NULL);
+  CRYPTO_set_locking_callback(NULL);
+  for(i = 0;  i < CRYPTO_num_locks();  i++)
+    MUTEX_CLEANUP(mutex_buf[i]);
+  free(mutex_buf);
+  mutex_buf = NULL;
+  return 1;
+}
+
+
+
+
 
 using namespace std;
 
@@ -130,6 +195,12 @@ struct RGWRequest
     utime_t t = ceph_clock_now(g_ceph_context) - ts;
     dout(2) << "req " << id << ":" << t << ":" << s->dialect << ":" << req_str << ":" << (op ? op->name() : "") << ":" << msg << dendl;
   }
+  
+  utime_t time_elapsed() {
+    utime_t elapsed = ceph_clock_now(g_ceph_context) - ts;
+    return elapsed;
+  }
+
 };
 
 class RGWFrontendConfig {
@@ -537,7 +608,6 @@ static void godown_alarm(int signum)
 static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWClientIO *client_io, OpsLogSocket *olog)
 {
   int ret = 0;
-  bool acl_main_override = false;
   client_io->init(g_ceph_context);
 
   req->log_init();
@@ -555,7 +625,7 @@ static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWC
 
   s->req_id = store->unique_id(req->id);
   s->trans_id = store->unique_trans_id(req->id);
-  dout(1) << "====== starting new request trans="  << s->trans_id.c_str() << " =====" << dendl;
+  dout(1) << "DSS API LOGGING: Request-Id: "<< s->trans_id.c_str() << dendl;
   //req->log_format(s, "initializing for trans_id = %s", s->trans_id.c_str());
 
   /* Logic for checking whether the request is token based or signature based */
@@ -577,9 +647,9 @@ static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWC
 
   if(
       (
-        (amz_metadata_directive != NULL && !strcmp(amz_metadata_directive, "COPY")) 
+        (amz_metadata_directive != NULL && !strcmp(amz_metadata_directive, "COPY"))
         || (jcs_metadata_directive != NULL && !strcmp(jcs_metadata_directive, "COPY"))
-      ) 
+      )
       &&
       (amz_copy_source != NULL || jcs_copy_source != NULL)
     ) {
@@ -592,46 +662,66 @@ static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWC
     }
   }
 
-
   RGWOp *op = NULL;
   int init_error = 0;
   bool should_log = false;
   RGWRESTMgr *mgr;
   RGWHandler *handler = rest->get_handler(store, s, client_io, &mgr, &init_error);
   if (init_error != 0) {
-    abort_early(s, NULL, init_error);
+    abort_early(s, NULL, init_error, NULL);
     goto done;
   }
+  dout(10) << "handler=" << typeid(*handler).name() << dendl;
 
   should_log = mgr->get_logging();
 
   req->log(s, "getting op");
   op = handler->get_op(store);
   if (!op) {
-    abort_early(s, NULL, -ERR_METHOD_NOT_ALLOWED);
+    abort_early(s, NULL, -ERR_METHOD_NOT_ALLOWED, handler);
     goto done;
   }
   req->op = op;
+  dout(10) << "op=" << typeid(*op).name() << dendl;
 
   req->log(s, "authorizing");
   ret = handler->authorize();
   if (ret < 0) {
     dout(10) << "failed to authorize request" << dendl;
-    abort_early(s, op, ret);
+    abort_early(s, NULL, ret, handler);
     goto done;
   }
 
   if (s->user.suspended) {
     dout(10) << "user is suspended, uid=" << s->user.user_id << dendl;
-    abort_early(s, op, -ERR_USER_SUSPENDED);
+    abort_early(s, op, -ERR_USER_SUSPENDED, handler);
     goto done;
   }
+
+  req->log(s, "init permissions");
+  ret = handler->init_permissions(op);
+  if (ret < 0) {
+    abort_early(s, op, ret, handler);
+    goto done;
+  }
+
+  /**
+   * Only some accesses support website mode, and website mode does NOT apply
+   * if you are using the REST endpoint either (ergo, no authenticated access)
+   */
+  req->log(s, "recalculating target");
+  ret = handler->retarget(op, &op);
+  if (ret < 0) {
+    abort_early(s, op, ret, handler);
+    goto done;
+  }
+  req->op = op;
 
   // This reads the ACL on the bucket or object
   req->log(s, "reading permissions");
   ret = handler->read_permissions(op);
   if (ret < 0) {
-    abort_early(s, op, ret);
+    abort_early(s, op, ret, handler);
     goto done;
   }
 
@@ -639,27 +729,24 @@ static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWC
   req->log(s, "init op");
   ret = op->init_processing();
   if (ret < 0) {
-    abort_early(s, op, ret);
+    abort_early(s, op, ret, handler);
     goto done;
   }
 
   req->log(s, "verifying op mask");
   ret = op->verify_op_mask();
   if (ret < 0) {
-    abort_early(s, op, ret);
+    abort_early(s, op, ret, handler);
     goto done;
   }
 
   req->log(s, "verifying op permissions");
-  acl_main_override = (s->auth_method).get_acl_main_override();
   ret = op->verify_permission();
   if (ret < 0) {
     if (s->system_request) {
       dout(2) << "overriding permissions due to system operation" << dendl;
-    } else if (acl_main_override && (ret != -ERR_BUCKET_ALREADY_OWNED)) { //<<<<<<
-      dout(0) << "DSS INFO: ACL decision will be overriden" << dendl;
     } else {
-      abort_early(s, op, ret);
+      abort_early(s, op, ret, handler);
       goto done;
     }
   }
@@ -667,13 +754,28 @@ static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWC
   req->log(s, "verifying op params");
   ret = op->verify_params();
   if (ret < 0) {
-    abort_early(s, op, ret);
+    abort_early(s, op, ret, handler);
+    goto done;
+  }
+
+  req->log(s, "pre-executing");
+  op->pre_exec();
+  ret = op->get_ret();
+  if (ret < 0) {
+    dout(2) << "pre_exec ret=" << ret << dendl;
+    abort_early(s, op, ret, handler);
     goto done;
   }
 
   req->log(s, "executing");
-  op->pre_exec();
   op->execute();
+  ret = op->get_ret();
+  if (ret < 0) {
+    dout(2) << "execute ret=" << ret << dendl;
+    abort_early(s, op, ret, handler);
+    goto done;
+  }
+  req->log(s, "completing");
   op->complete();
 done:
   int r = client_io->complete_request();
@@ -691,8 +793,8 @@ done:
   if (handler)
     handler->put_op(op);
   rest->put_handler(handler);
-
-  dout(1) << "====== req done trans=" << s->trans_id.c_str() << " http_status=" << http_ret << " ======" << dendl;
+  utime_t req_serve_time = req->time_elapsed();
+  dout(1) << "DSS API LOGGING: ====== req done trans=" << s->trans_id.c_str() << " http_status=" << http_ret << " req_serving_time= " << req_serve_time << " ======" << dendl;
 
   return (ret < 0 ? ret : s->err.ret);
 }
@@ -750,7 +852,6 @@ void RGWLoadGenProcess::handle_request(RGWRequest *r)
 static int civetweb_callback(struct mg_connection *conn) {
   struct mg_request_info *req_info = mg_get_request_info(conn);
   RGWProcessEnv *pe = static_cast<RGWProcessEnv *>(req_info->user_data);
-
   RGWRados *store = pe->store;
   RGWREST *rest = pe->rest;
   OpsLogSocket *olog = pe->olog;
@@ -766,8 +867,21 @@ static int civetweb_callback(struct mg_connection *conn) {
    * method required is EC2 signature or tokens.
    * While there can be at most 100 header fields in a HTTP request,
    * http_headers is an array of size 64 elements inside civetweb */
+  dout(1) << "DSS API LOGGING: ====== starting new request ======" << dendl;
 
-  dout(1) << "DSS INFO: Num headers is: " << req_info->num_headers << dendl;
+  dout(1) << "DSS INFO: Printing received headers: Total number of received headers are: " << req_info->num_headers << dendl;
+
+  string req_str;
+
+  req_str.append(" ");
+  req_str.append(req_info->request_method);
+  req_str.append(" ");
+  req_str.append(req_info->uri);
+  req_str.append(" HTTP/");
+  req_str.append(req_info->http_version);
+
+  dout(1) << "DSS API LOGGING:" << req_str.c_str() << dendl;
+
   for (int i = 0; i < req_info->num_headers; i++) {
       if ((req_info->http_headers[i]).name != NULL) {
           string name_str((req_info->http_headers[i]).name);
@@ -780,8 +894,7 @@ static int civetweb_callback(struct mg_connection *conn) {
               break;
           }
 
-          dout(1) << "DSS INFO: CIVETWEB HEADER NAME: " << name_str << dendl;
-          dout(1) << "DSS INFO: CIVETWEB HEADER VALUE: " << value_str << dendl;
+          dout(1) << "DSS API LOGGING: " << name_str << " : "<< value_str << dendl;
 
         /*
           if (name_str.compare("X-Auth-Token") == 0) {
@@ -1161,7 +1274,14 @@ int main(int argc, const char **argv)
   rgw_init_resolver();
   
   curl_global_init(CURL_GLOBAL_ALL);
-  
+
+  /* setup openssl multi-threading functions */
+  openssl_thread_setup();
+  /* Initialise the library */
+  ERR_load_crypto_strings();
+  OpenSSL_add_all_algorithms();
+  OPENSSL_config(NULL);
+  srand ( time(NULL) );
   FCGX_Init();
 
   int r = 0;
@@ -1204,8 +1324,10 @@ int main(int argc, const char **argv)
     apis_map[*li] = true;
   }
 
-  if (apis_map.count("s3") > 0)
-    rest.register_default_mgr(set_logging(new RGWRESTMgr_S3));
+  // S3 website mode is a specialization of S3
+  bool s3website_enabled = apis_map.count("s3website") > 0;
+  if (apis_map.count("s3") > 0 || s3website_enabled)
+    rest.register_default_mgr(set_logging(new RGWRESTMgr_S3(s3website_enabled)));
 
   if (apis_map.count("swift") > 0) {
     do_swift = true;
@@ -1354,6 +1476,11 @@ int main(int argc, const char **argv)
   rgw_shutdown_resolver();
   curl_global_cleanup();
 
+  /* cleanup openssl multi-threading functions */
+  openssl_thread_cleanup();
+
+  EVP_cleanup();
+  ERR_free_strings();
   rgw_perf_stop(g_ceph_context);
 
   dout(1) << "final shutdown" << dendl;

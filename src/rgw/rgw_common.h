@@ -4,6 +4,7 @@
  * Ceph - scalable distributed file system
  *
  * Copyright (C) 2004-2009 Sage Weil <sage@newdream.net>
+ * Copyright (C) 2015 Yehuda Sadeh <yehuda@redhat.com>
  *
  * This is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -31,6 +32,7 @@
 #include "rgw_cors.h"
 #include "rgw_quota.h"
 #include "rgw_string.h"
+#include "rgw_website.h"
 #include "cls/version/cls_version_types.h"
 #include "cls/user/cls_user_types.h"
 #include "cls/rgw/cls_rgw_types.h"
@@ -50,11 +52,16 @@ using ceph::crypto::MD5;
 #define RGW_HTTP_RGWX_ATTR_PREFIX "RGWX_ATTR_"
 #define RGW_HTTP_RGWX_ATTR_PREFIX_OUT "Rgwx-Attr-"
 
-#define RGW_AMZ_META_PREFIX "x-jcs-meta-"
+#define RGW_AMZ_PREFIX "x-jcs-"
+#define RGW_AMZ_META_PREFIX RGW_AMZ_PREFIX "x-jcs-meta-"
+#define RGW_AMZ_WEBSITE_REDIRECT_LOCATION RGW_AMZ_PREFIX "website-redirect-location"
 
 #define RGW_SYS_PARAM_PREFIX "rgwx-"
 
 #define RGW_ATTR_ACL		RGW_ATTR_PREFIX "acl"
+#define RGW_ATTR_KEY    RGW_ATTR_PREFIX "key"
+#define RGW_ATTR_IV     RGW_ATTR_PREFIX "iv"
+#define RGW_ATTR_MKEYVERSION   RGW_ATTR_PREFIX "mkeyversion"
 #define RGW_ATTR_CORS		RGW_ATTR_PREFIX "cors"
 #define RGW_ATTR_ETAG    	RGW_ATTR_PREFIX "etag"
 #define RGW_ATTR_BUCKETS	RGW_ATTR_PREFIX "buckets"
@@ -69,6 +76,7 @@ using ceph::crypto::MD5;
 #define RGW_ATTR_SHADOW_OBJ    	RGW_ATTR_PREFIX "shadow_name"
 #define RGW_ATTR_MANIFEST    	RGW_ATTR_PREFIX "manifest"
 #define RGW_ATTR_USER_MANIFEST  RGW_ATTR_PREFIX "user_manifest"
+#define RGW_ATTR_AMZ_WEBSITE_REDIRECT_LOCATION	RGW_ATTR_PREFIX RGW_AMZ_WEBSITE_REDIRECT_LOCATION
 
 #define RGW_ATTR_OLH_PREFIX     RGW_ATTR_PREFIX "olh."
 
@@ -86,6 +94,7 @@ using ceph::crypto::MD5;
 #define RGW_FORMAT_PLAIN        0
 #define RGW_FORMAT_XML          1
 #define RGW_FORMAT_JSON         2
+#define RGW_FORMAT_HTML         3
 
 #define RGW_CAP_READ            0x1
 #define RGW_CAP_WRITE           0x2
@@ -93,6 +102,8 @@ using ceph::crypto::MD5;
 
 #define RGW_REST_SWIFT          0x1
 #define RGW_REST_SWIFT_AUTH     0x2
+#define RGW_REST_S3             0x4
+#define RGW_REST_WEBSITE     0x8
 
 #define RGW_SUSPENDED_USER_AUID (uint64_t)-2
 
@@ -146,6 +157,18 @@ using ceph::crypto::MD5;
 #define ERR_SIGNATURE_NO_MATCH   2027
 #define ERR_INVALID_ACCESS_KEY   2028
 #define ERR_BUCKET_ALREADY_OWNED 2029
+#define ERR_BAD_RENAME_REQ       2030
+#define ERR_RENAME_NOT_ENABLED   2031
+#define ERR_RENAME_FAILED        2032
+#define ERR_RENAME_DATA_LOST     2033
+#define ERR_RENAME_COPY_FAILED   2034
+#define ERR_RENAME_NEW_OBJ_DEL_FAILED     2035
+#define ERR_RENAME_OBJ_EXISTS    2036
+#define ERR_INVALID_ENC_ALGO     2037 
+#define ERR_MALFORMED_XML        2038
+#define ERR_USER_EXIST           2039
+#define ERR_WEBSITE_REDIRECT     2040
+#define ERR_NO_SUCH_WEBSITE_CONFIGURATION 2041
 #define ERR_USER_SUSPENDED       2100
 #define ERR_INTERNAL_ERROR       2200
 
@@ -252,6 +275,7 @@ class RGWHTTPArgs
   bool has_resp_modifier;
  public:
   RGWHTTPArgs() : has_resp_modifier(false) {}
+
   /** Set the arguments; as received */
   void set(string s) {
     has_resp_modifier = false;
@@ -788,8 +812,11 @@ struct RGWBucketInfo
   // Represents the shard number for blind bucket.
   const static uint32_t NUM_SHARDS_BLIND_BUCKET;
 
+  bool has_website;
+  RGWBucketWebsiteConf website_conf;
+
   void encode(bufferlist& bl) const {
-     ENCODE_START(11, 4, bl);
+     ENCODE_START(12, 4, bl);
      ::encode(bucket, bl);
      ::encode(owner, bl);
      ::encode(flags, bl);
@@ -801,10 +828,14 @@ struct RGWBucketInfo
      ::encode(quota, bl);
      ::encode(num_shards, bl);
      ::encode(bucket_index_shard_hash_type, bl);
+     ::encode(has_website, bl);
+     if (has_website) {
+       ::encode(website_conf, bl);
+     }
      ENCODE_FINISH(bl);
   }
   void decode(bufferlist::iterator& bl) {
-    DECODE_START_LEGACY_COMPAT_LEN_32(9, 4, 4, bl);
+    DECODE_START_LEGACY_COMPAT_LEN_32(12, 4, 4, bl);
      ::decode(bucket, bl);
      if (struct_v >= 2)
        ::decode(owner, bl);
@@ -827,6 +858,14 @@ struct RGWBucketInfo
        ::decode(num_shards, bl);
      if (struct_v >= 11)
        ::decode(bucket_index_shard_hash_type, bl);
+     if (struct_v >= 12) {
+       ::decode(has_website, bl);
+       if (has_website) {
+         ::decode(website_conf, bl);
+       } else {
+         website_conf = RGWBucketWebsiteConf();
+       }
+     }
      DECODE_FINISH(bl);
   }
   void dump(Formatter *f) const;
@@ -838,7 +877,8 @@ struct RGWBucketInfo
   int versioning_status() { return flags & (BUCKET_VERSIONED | BUCKET_VERSIONS_SUSPENDED); }
   bool versioning_enabled() { return versioning_status() == BUCKET_VERSIONED; }
 
-  RGWBucketInfo() : flags(0), creation_time(0), has_instance_obj(false), num_shards(0), bucket_index_shard_hash_type(MOD) {}
+  RGWBucketInfo() : flags(0), creation_time(0), has_instance_obj(false), num_shards(0), bucket_index_shard_hash_type(MOD),
+                    has_website(false) {}
 };
 WRITE_CLASS_ENCODER(RGWBucketInfo)
 
@@ -945,6 +985,11 @@ struct rgw_obj_key {
     k->instance = instance;
   }
 
+  void dss_duplicate(rgw_obj_key* k) {
+    name = k->name;
+    instance = k->instance;
+  }
+
   void set(const string& n) {
     name = n;
     instance.clear();
@@ -1003,6 +1048,7 @@ class authorization_method {
     bool _token_validation;
     bool _copy_action;
     bool _url_type_token;
+    bool _infinite_url_type_token;
     bool _acl_main_override;
     bool _acl_copy_override;
     string _token;
@@ -1049,6 +1095,14 @@ class authorization_method {
     {
       _url_type_token = val;
     }
+    inline bool get_infinite_url_type_token()
+    {
+      return _infinite_url_type_token;
+    }
+    inline void set_infinite_url_type_token(bool val)
+    {
+      _infinite_url_type_token = val;
+    }
     inline bool get_acl_main_override()
     {
       return _acl_main_override;
@@ -1067,10 +1121,12 @@ class authorization_method {
     }
 
 
-    authorization_method(bool method, bool action, bool url_token, bool acl_main, bool acl_copy) :
+    authorization_method(bool method, bool action, bool url_token,
+                         bool infini_token, bool acl_main, bool acl_copy) :
       _token_validation(method),
       _copy_action(action),
       _url_type_token(url_token),
+      _infinite_url_type_token(infini_token),
       _acl_main_override(acl_main),
       _acl_copy_override(acl_copy) { }
     ~authorization_method() { }
@@ -1102,6 +1158,7 @@ struct req_state {
 
    rgw_bucket bucket;
    string bucket_name_str;
+   string bucket_owner_id;
    rgw_obj_key object;
    string src_bucket_name;
    rgw_obj_key src_object;
@@ -1110,6 +1167,8 @@ struct req_state {
 
    string region_endpoint;
    string bucket_instance_id;
+
+   string redirect;
 
    RGWBucketInfo bucket_info;
    map<string, bufferlist> bucket_attrs;

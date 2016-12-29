@@ -399,10 +399,11 @@ int RGWCreateBucket_ObjStore_SWIFT::get_params()
 
 void RGWCreateBucket_ObjStore_SWIFT::send_response()
 {
-  if (!ret)
-    ret = STATUS_CREATED;
-  else if (ret == -ERR_BUCKET_EXISTS)
+  if (exist_ret == -ERR_BUCKET_EXISTS) {
     ret = STATUS_ACCEPTED;
+  } else if (!ret) {
+    ret = STATUS_CREATED;
+  }
   set_req_state_err(s, ret);
   dump_errno(s);
   /* Propose ending HTTP header with 0 Content-Length header. */
@@ -690,6 +691,19 @@ void RGWCopyObj_ObjStore_SWIFT::send_response()
     s->formatter->close_section();
     rgw_flush_formatter(s, s->formatter);
   }
+}
+
+int RGWGetObj_ObjStore_SWIFT::get_params()
+{
+  const string& mm = s->info.args.get("multipart-manifest");
+
+  return RGWGetObj_ObjStore::get_params();
+}
+
+int RGWGetObj_ObjStore_SWIFT::send_response_data_error()
+{
+  bufferlist bl;
+  return send_response_data(bl, 0, 0);
 }
 
 int RGWGetObj_ObjStore_SWIFT::send_response_data(bufferlist& bl, off_t bl_ofs, off_t bl_len)

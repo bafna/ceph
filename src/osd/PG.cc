@@ -612,7 +612,7 @@ bool PG::needs_recovery() const
   }
 
   if (!ret)
-    dout(10) << __func__ << " is recovered" << dendl;
+    dout(0) << __func__ << " DSS Info is recovered" << dendl;
   return ret;
 }
 
@@ -2011,7 +2011,7 @@ unsigned PG::get_backfill_priority()
 
 void PG::finish_recovery(list<Context*>& tfin)
 {
-  dout(10) << "finish_recovery" << dendl;
+  dout(0) << "DSS Info finish_recovery" << dendl;
   assert(info.last_complete == info.last_update);
 
   clear_recovery_state();
@@ -2031,7 +2031,7 @@ void PG::_finish_recovery(Context *c)
     return;
   }
   if (c == finish_sync_event) {
-    dout(10) << "_finish_recovery" << dendl;
+    dout(0) << "DSS Info _finish_recovery" << dendl;
     finish_sync_event = 0;
     purge_strays();
 
@@ -2188,7 +2188,7 @@ void PG::split_into(pg_t child_pgid, PG *child, unsigned split_bits)
 
 void PG::clear_recovery_state() 
 {
-  dout(10) << "clear_recovery_state" << dendl;
+  dout(0) << "DSS Info clear_recovery_state" << dendl;
 
   pg_log.reset_recovery_pointers();
   finish_sync_event = 0;
@@ -5293,7 +5293,7 @@ void PG::handle_advance_map(
 {
   assert(lastmap->get_epoch() == osdmap_ref->get_epoch());
   assert(lastmap == osdmap_ref);
-  dout(10) << "handle_advance_map "
+  dout(0) << "DSS Info handle_advance_map "
 	   << newup << "/" << newacting
 	   << " -- " << up_primary << "/" << acting_primary
 	   << dendl;
@@ -7489,7 +7489,7 @@ void PG::RecoveryState::WaitUpThru::exit()
 
 void PG::RecoveryState::RecoveryMachine::log_enter(const char *state_name)
 {
-  dout(5) << "enter " << state_name << dendl;
+  dout(0) << "DSS Info enter " << state_name << dendl;
   pg->osd->pg_recovery_stats.log_enter(state_name);
 }
 

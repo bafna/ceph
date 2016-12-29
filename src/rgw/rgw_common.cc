@@ -147,7 +147,7 @@ void req_info::rebuild_from(req_info& src)
 req_state::req_state(CephContext *_cct, class RGWEnv *e) : cct(_cct), cio(NULL), op(OP_UNKNOWN),
 							   has_acl_header(false),
                                                            os_auth_token(NULL), info(_cct, e),
-                                                           auth_method(false, false, false, false, false)
+                                                           auth_method(false, false, false, false, false, false)
 {
   enable_ops_log = e->conf->enable_ops_log;
   enable_usage_log = e->conf->enable_usage_log;
@@ -245,6 +245,9 @@ void req_info::init_meta_info(bool *found_bad_meta)
         } else {
           x_meta_map[name_low] = val;
         }
+      }
+      if (strncmp(header_name.c_str(), "HTTP_X_JCS_SERVER_SIDE_ENCRYPTION", strlen(header_name.c_str())) == 0) {
+        x_meta_map["x-jcs-server-side-encryption"] = val;
       }
     }
   }
@@ -616,6 +619,7 @@ int RGWHTTPArgs::parse()
           (name.compare("versionId") == 0) ||
           (name.compare("versions") == 0) ||
           (name.compare("versioning") == 0) ||
+          (name.compare("website") == 0) ||
           (name.compare("torrent") == 0)) {
         sub_resources[name] = val;
       } else if (name[0] == 'r') { // root of all evil
@@ -708,6 +712,12 @@ void RGWHTTPArgs::get_bool(const char *name, bool *val, bool def_val)
 
 bool verify_bucket_permission(struct req_state *s, int perm)
 {
+  if ((s->auth_method).get_acl_main_override())
+  {
+    dout(0) << "DSS INFO: ACL bucket decision will be overriden" << dendl;
+    return true;
+  }
+  
   if (!s->bucket_acl)
     return false;
 
@@ -724,6 +734,12 @@ static inline bool check_deferred_bucket_acl(struct req_state *s, uint8_t deferr
 
 bool verify_object_permission(struct req_state *s, RGWAccessControlPolicy *bucket_acl, RGWAccessControlPolicy *object_acl, int perm)
 {
+  if ((s->auth_method).get_acl_main_override())
+  {
+    dout(0) << "DSS INFO: ACL object decision will be overriden" << dendl;
+    return true;
+  }
+  
   if (check_deferred_bucket_acl(s, RGW_DEFER_TO_BUCKET_ACLS_RECURSE, perm) ||
       check_deferred_bucket_acl(s, RGW_DEFER_TO_BUCKET_ACLS_FULL_CONTROL, RGW_PERM_FULL_CONTROL)) {
     return true;

@@ -6561,6 +6561,7 @@ bool OSD::advance_pg(
       continue;
     }
 
+    dout(0) << __func__ << " " << *pg << " DSS Info: Calculating new acting" << dendl;
     vector<int> newup, newacting;
     int up_primary, acting_primary;
     nextmap->pg_to_up_acting_osds(

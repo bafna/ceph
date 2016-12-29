@@ -204,6 +204,28 @@ int RGWMongoose::complete_header()
   header_data.append("\r\n");
 
   sent_header = true;
+ string response_headers;
+ header_data.copy(0, header_data.length(), response_headers);
+
+ vector<string> vec_headers;
+ char *headers = strdup(response_headers.c_str());
+ char *savedptr;
+ char *p = strtok_r(headers, "\r\n", &savedptr);
+
+ while (p) {
+     string tok = p;
+     vec_headers.push_back(tok);
+     p = strtok_r(NULL, "\r\n", &savedptr);
+ }
+
+ dout(1) << "DSS API LOGGING: ===Printing headers sent in response:===" << dendl;
+ for (int i = 0; i< vec_headers.size(); i++) {
+ 	dout(1) << "DSS API LOGGING: " <<vec_headers[i] << dendl;
+ } 
+ 
+ free(headers);
+
+
 
   return write_data(header_data.c_str(), header_data.length());
 }

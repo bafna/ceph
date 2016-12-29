@@ -20,11 +20,17 @@ void rgw_get_errno_s3(struct rgw_http_errors *e, int err_no);
 
 class RGWGetObj_ObjStore_S3 : public RGWGetObj_ObjStore
 {
+protected:
+  // Serving a custom error page from an object is really a 200 response with
+  // just the status line altered.
+  int custom_http_ret = 0;
 public:
   RGWGetObj_ObjStore_S3() {}
   ~RGWGetObj_ObjStore_S3() {}
 
+  int send_response_data_error();
   int send_response_data(bufferlist& bl, off_t ofs, off_t len);
+  void set_custom_http_response(int http_ret) { custom_http_ret = http_ret; }
 };
 
 class RGWListBuckets_ObjStore_S3 : public RGWListBuckets_ObjStore {
@@ -83,6 +89,31 @@ public:
   ~RGWSetBucketVersioning_ObjStore_S3() {}
 
   int get_params();
+  void send_response();
+};
+
+class RGWGetBucketWebsite_ObjStore_S3 : public RGWGetBucketWebsite {
+public:
+  RGWGetBucketWebsite_ObjStore_S3() {}
+  ~RGWGetBucketWebsite_ObjStore_S3() {}
+
+  void send_response();
+};
+
+class RGWSetBucketWebsite_ObjStore_S3 : public RGWSetBucketWebsite {
+public:
+  RGWSetBucketWebsite_ObjStore_S3() {}
+  ~RGWSetBucketWebsite_ObjStore_S3() {}
+
+  int get_params();
+  void send_response();
+};
+
+class RGWDeleteBucketWebsite_ObjStore_S3 : public RGWDeleteBucketWebsite {
+public:
+  RGWDeleteBucketWebsite_ObjStore_S3() {}
+  ~RGWDeleteBucketWebsite_ObjStore_S3() {}
+
   void send_response();
 };
 
@@ -164,7 +195,7 @@ public:
   int get_params();
   int complete_get_params();
   void send_response();
-  int get_data(bufferlist& bl);
+  int get_data(bufferlist& bl,MD5* hash= NULL);
 };
 
 class RGWDeleteObj_ObjStore_S3 : public RGWDeleteObj_ObjStore {
@@ -185,6 +216,14 @@ public:
   int get_params();
   void send_partial_response(off_t ofs);
   void send_response();
+};
+
+class RGWRenameObj_ObjStore_S3 : public RGWRenameObj_ObjStore {
+    public:
+        RGWRenameObj_ObjStore_S3() {}
+        ~RGWRenameObj_ObjStore_S3() {}
+
+        void send_response();
 };
 
 class RGWGetACLs_ObjStore_S3 : public RGWGetACLs_ObjStore {
@@ -344,10 +383,12 @@ public:
   int validate_request(const string& action,
                        const string& resource_name,
                        const string& tenant_name,
+                       const string& source_ip,
                        const bool&   is_sign_auth,
                        const bool&   is_copy,
                        const bool&   is_cross_account,
                        const bool&   is_url_token,
+                       const bool&   is_infini_url_token,
                        const string& copy_src,
                        const string& token,
                        const string& auth_id,
@@ -356,7 +397,10 @@ public:
                        const string& objectname,
                        string& iamerror);
 
-  int make_iam_request(const string& keystone_url, string& iamerror);
+  int make_iam_request(const string& keystone_url,
+                             string& iamerror,
+                       const string& rootAccount,
+                       const bool& is_infini_url_token);
 };
 
 class RGW_Auth_S3 {
@@ -395,6 +439,10 @@ public:
   virtual int init(RGWRados *store, struct req_state *state, RGWClientIO *cio);
   virtual int authorize() {
     return RGW_Auth_S3::authorize(store, s);
+  }
+  virtual int retarget(RGWOp *op, RGWOp **new_op) {
+    *new_op = op;
+    return 0;
   }
 };
 
@@ -442,6 +490,9 @@ protected:
   bool is_obj_update_op() {
     return is_acl_op();
   }
+  bool is_rename_op() {
+      return s->info.args.exists("newname");
+  }
   RGWOp *get_obj_op(bool get_data);
 
   RGWOp *op_get();
@@ -456,8 +507,10 @@ public:
 };
 
 class RGWRESTMgr_S3 : public RGWRESTMgr {
+private:
+  bool enable_s3website;
 public:
-  RGWRESTMgr_S3() {}
+  RGWRESTMgr_S3(bool enable_s3website) : enable_s3website(false) { this->enable_s3website = enable_s3website; }
   virtual ~RGWRESTMgr_S3() {}
 
   virtual RGWRESTMgr *get_resource_mgr(struct req_state *s, const string& uri) {
@@ -571,10 +624,62 @@ class RGWResourceKeystoneInfo {
                                     string& reason);
 };
 
+class RGW_KMS: public RGWHTTPClient {
+private:
+  bufferlist rx_buffer;
+  bufferlist rx_headers_buffer;
+  bufferlist tx_buffer;
+  bufferlist::iterator tx_buffer_it;
+
+private:
+  void set_tx_buffer(const string& d) {
+    tx_buffer.clear();
+    tx_buffer.append(d);
+    tx_buffer_it = tx_buffer.begin();
+    set_send_length(tx_buffer.length());
+  }
+
+public:
+  RGW_KMS(CephContext *_cct)
+      : RGWHTTPClient(_cct) {
+  }
+
+  int receive_header(void *ptr, size_t len) {
+    rx_headers_buffer.append((char *)ptr, len);
+    return 0;
+  }
+  int receive_data(void *ptr, size_t len) {
+    rx_buffer.append((char *)ptr, len);
+    return 0;
+  }
+
+  int send_data(void *ptr, size_t len) {
+    if (!tx_buffer_it.get_remaining())
+      return 0; // nothing left to send
+
+    int l = MIN(tx_buffer_it.get_remaining(), len);
+    memcpy(ptr, tx_buffer_it.get_current_ptr().c_str(), l);
+    try {
+      tx_buffer_it.advance(l);
+    } catch (buffer::end_of_buffer &e) {
+      assert(0);
+    }
+
+    return l;
+  }
+
+  int make_kms_encrypt_request(string &root_acount, RGWKmsData* kmsdata);
+  int make_kms_decrypt_request(string &root_acount, RGWKmsData* kmsdata);;
+
+};
+
+
 class dss_endpoint {
     public:
         static string endpoint;
         dss_endpoint() { }
         ~dss_endpoint() { }
 };
+class RGWHandler_ObjStore_Obj_S3Website;
+
 #endif

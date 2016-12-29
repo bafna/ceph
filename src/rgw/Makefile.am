@@ -21,6 +21,7 @@ librgw_la_SOURCES =  \
 	rgw/rgw_xml.cc \
 	rgw/rgw_usage.cc \
 	rgw/rgw_json_enc.cc \
+	rgw/rgw_xml_enc.cc \
 	rgw/rgw_user.cc \
 	rgw/rgw_bucket.cc\
 	rgw/rgw_tools.cc \
@@ -45,7 +46,8 @@ librgw_la_SOURCES =  \
 	rgw/rgw_replica_log.cc \
 	rgw/rgw_keystone.cc \
 	rgw/rgw_quota.cc \
-	rgw/rgw_dencoder.cc
+	rgw/rgw_dencoder.cc \
+	rgw/rgw_website.cc
 librgw_la_CXXFLAGS = -Woverloaded-virtual ${AM_CXXFLAGS}
 noinst_LTLIBRARIES += librgw.la
 
@@ -171,6 +173,8 @@ noinst_HEADERS += \
 	rgw/rgw_keystone.h \
 	rgw/rgw_civetweb.h \
 	rgw/rgw_civetweb_log.h \
+	rgw/rgw_website.h \
+	rgw/rgw_rest_s3website.h \
 	civetweb/civetweb.h \
 	civetweb/include/civetweb.h \
 	civetweb/include/civetweb_conf.h \
