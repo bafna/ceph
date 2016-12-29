@@ -315,6 +315,13 @@ AC_SUBST(KEYUTILS_LIB)
 AC_CHECK_LIB([m], [pow], [true], AC_MSG_FAILURE([libm not found]))
 AC_CHECK_FUNCS([syncfs], AC_DEFINE([HAVE_SYS_SYNCFS], [1], [we have syncfs]), [])
 
+
+# since we are now using openssl and need to provide the additional functions
+# for thread safety, we also need to link to crypto library (-lcrypto)
+AC_CHECK_LIB(crypto, main, [],
+    AC_MSG_FAILURE(["Crypto system library not found."]))
+
+
 # Find some crypto library for us to use, while letting user to decide which one to use.
 AC_ARG_WITH([cryptopp],
 	[AS_HELP_STRING([--with-cryptopp], [Use cryptographic functions from cryptopp])],
@@ -871,6 +878,7 @@ AC_CHECK_HEADER([boost/program_options/option.hpp], [],
 AC_CHECK_LIB(boost_system-mt, main, [],
     [AC_CHECK_LIB(boost_system, main, [],
         AC_MSG_NOTICE(["Boost system library not found."]))])
+
 
 # Find the right boost_thread library.
 BOOST_THREAD_LIBS=""

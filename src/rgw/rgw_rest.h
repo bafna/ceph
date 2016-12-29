@@ -151,7 +151,7 @@ public:
 
   virtual int verify_params();
   virtual int get_params();
-  int get_data(bufferlist& bl);
+  int get_data(bufferlist& bl,MD5* hash= NULL);
 };
 
 class RGWPostObj_ObjStore : public RGWPostObj
@@ -186,6 +186,12 @@ class RGWCopyObj_ObjStore : public RGWCopyObj {
 public:
   RGWCopyObj_ObjStore() {}
   ~RGWCopyObj_ObjStore() {}
+};
+
+class RGWRenameObj_ObjStore : public RGWRenameObj {
+public:
+  RGWRenameObj_ObjStore() {}
+  ~RGWRenameObj_ObjStore() {}
 };
 
 class RGWGetACLs_ObjStore : public RGWGetACLs {
@@ -303,7 +309,7 @@ protected:
 public:
   RGWHandler_ObjStore() {}
   virtual ~RGWHandler_ObjStore() {}
-  int init_permissions();
+  int init_permissions(RGWOp *op);
   int read_permissions(RGWOp *op);
   virtual int retarget(RGWOp *op, RGWOp **new_op) {
     *new_op = op;

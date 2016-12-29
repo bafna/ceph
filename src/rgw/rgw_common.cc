@@ -246,6 +246,9 @@ void req_info::init_meta_info(bool *found_bad_meta)
           x_meta_map[name_low] = val;
         }
       }
+      if (strncmp(header_name.c_str(), "HTTP_X_JCS_SERVER_SIDE_ENCRYPTION", strlen(header_name.c_str())) == 0) {
+        x_meta_map["x-jcs-server-side-encryption"] = val;
+      }
     }
   }
   for (iter = x_meta_map.begin(); iter != x_meta_map.end(); ++iter) {

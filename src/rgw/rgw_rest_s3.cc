@@ -3,10 +3,10 @@
 
 #include <errno.h>
 #include <string.h>
+#include <math.h>
 
 #include "common/ceph_crypto.h"
 #include "common/Formatter.h"
-#include "common/JSONFormatter.h"
 #include "common/utf8.h"
 #include "common/ceph_json.h"
 
@@ -76,17 +76,100 @@ static struct response_attr_param resp_attr_params[] = {
   {NULL, NULL},
 };
 
+int RGWGetObj_ObjStore_S3Website::send_response_data(bufferlist& bl, off_t bl_ofs, off_t bl_len) {
+  map<string, bufferlist>::iterator iter;
+  iter = attrs.find(RGW_ATTR_AMZ_WEBSITE_REDIRECT_LOCATION);
+  if (iter != attrs.end()) {
+    bufferlist &bl = iter->second;
+    s->redirect = string(bl.c_str(), bl.length());
+    s->err.http_ret = 301;
+    ldout(s->cct, 20) << __CEPH_ASSERT_FUNCTION << " redirectng per x-dss-website-redirect-location=" << s->redirect << dendl;
+    ret = -ERR_WEBSITE_REDIRECT;
+    set_req_state_err(s, ret);
+    dump_errno(s);
+    dump_content_length(s, 0);
+    dump_redirect(s, s->redirect);
+    end_header(s, this);
+    return ret;
+  } else {
+    return RGWGetObj_ObjStore_S3::send_response_data(bl, bl_ofs, bl_len);
+  }
+}
+
+int RGWGetObj_ObjStore_S3Website::send_response_data_error()
+{
+  return RGWGetObj_ObjStore_S3::send_response_data_error();
+}
+
+int RGWGetObj_ObjStore_S3::send_response_data_error()
+{
+  bufferlist bl;
+  return send_response_data(bl, 0 , 0);
+}
+
 int RGWGetObj_ObjStore_S3::send_response_data(bufferlist& bl, off_t bl_ofs, off_t bl_len)
 {
   const char *content_type = NULL;
   string content_type_str;
   map<string, string> response_attrs;
   map<string, string>::iterator riter;
-  bufferlist metadata_bl;
+  bufferlist metadata_bl, decrypted_bl;
+  if (ret)
+  {
+    dout(0) << "SSEDebug Value of ret at entrance " << ret << " "<<  bl.length() << dendl;
+  } 
+  if (kmsdata)
+  {
+    unsigned char* read_data; 
+    int decryptedtext_len,left_data,iter, full_chunks ;
+    uint64_t chunk_size = s->cct->_conf->rgw_max_chunk_size;
+    unsigned char* decryptedtext = new unsigned char[chunk_size];
 
+    const char* c_key = kmsdata->key_dec.c_str();
+    const char* c_iv = kmsdata->iv_dec.c_str(); 
+
+    read_data = reinterpret_cast<unsigned char *>(bl.c_str());
+    full_chunks = floor(((double)bl_len)/chunk_size);
+    dout(0) << "SSEINFO Total part number " << full_chunks << dendl;
+    for (iter=0; iter < full_chunks  ; iter++)
+    {
+      decryptedtext_len = decrypt(read_data, chunk_size, (unsigned char*)c_key,(unsigned char*)c_iv,decryptedtext);
+      if (decryptedtext_len == -1)
+      {
+        dout(0) << " Error while decrypting " << dendl;
+        return -ERR_INTERNAL_ERROR;
+      }
+      read_data += chunk_size;
+      decrypted_bl.append((char*)decryptedtext, chunk_size);
+      dout(0) << "SSEINFO Doing for part number " << iter << dendl;
+    }
+
+    left_data = bl_len % chunk_size;
+    if (left_data > 15)
+    {
+      dout(0) << "SSEINFO Length of Encrypted text " << bl_len << " and key is " << c_key << " " << strlen(c_key) << " and iv " << c_iv << " " << strlen(c_iv) << dendl;
+      decryptedtext_len = decrypt(read_data, left_data, (unsigned char*)c_key,(unsigned char*)c_iv,decryptedtext);
+      if (decryptedtext_len == -1)
+      {
+        dout(0) << " Error while decrypting " << dendl;
+        delete [] decryptedtext;
+        return -ERR_INTERNAL_ERROR;
+      }
+      decrypted_bl.append((char*)decryptedtext, left_data);
+      string bufferprinter = "";
+      decrypted_bl.copy(0, decrypted_bl.length(), bufferprinter);
+      //dout(0) << "SSEINFO Decrypted text " << bufferprinter << dendl;
+    }
+    else if (left_data > 0)
+    {
+      dout(0) << "SSEINFO Not decrypting tail" << dendl;
+      decrypted_bl.append((char*)read_data, left_data);
+    }
+    delete [] decryptedtext;
+  }
+  dout(0) << "SSEDebug done with enc dec" << dendl;
   if (ret)
     goto done;
-
   if (sent_header)
     goto send_data;
 
@@ -127,6 +210,9 @@ int RGWGetObj_ObjStore_S3::send_response_data(bufferlist& bl, off_t bl_ofs, off_
       }
     }
 
+    if (kmsdata)
+      s->cio->print("x-jcs-server-side-encryption: \"%s\"\r\n", "AES256");
+
     for (struct response_attr_param *p = resp_attr_params; p->param; p++) {
       bool exists;
       string val = s->info.args.get(p->param, &exists);
@@ -163,9 +249,14 @@ int RGWGetObj_ObjStore_S3::send_response_data(bufferlist& bl, off_t bl_ofs, off_
   }
 
 done:
-  set_req_state_err(s, (partial_content && !ret) ? STATUS_PARTIAL_CONTENT : ret);
-
-  dump_errno(s);
+  if (custom_http_ret) {
+    set_req_state_err(s, 0);
+    dump_errno(s, custom_http_ret);
+  } else {
+    set_req_state_err(s, (partial_content && !ret) ? STATUS_PARTIAL_CONTENT
+          	  : ret);
+    dump_errno(s);
+  }
 
   for (riter = response_attrs.begin(); riter != response_attrs.end(); ++riter) {
     s->cio->print("%s: %s\r\n", riter->first.c_str(), riter->second.c_str());
@@ -183,9 +274,16 @@ done:
 
 send_data:
   if (get_data && !ret) {
-    int r = s->cio->write(bl.c_str() + bl_ofs, bl_len);
+    int r;
+    if (kmsdata)
+      r = s->cio->write(decrypted_bl.c_str() + bl_ofs, bl_len);
+    else
+      r = s->cio->write(bl.c_str() + bl_ofs, bl_len);
     if (r < 0)
+    {
+      dout(0) << "SSEDebug failing while writing to io" << dendl;
       return r;
+    }
   }
 
   return 0;
@@ -1283,10 +1381,13 @@ int RGWPostObj_ObjStore_S3::get_policy()
             }
 	    dout(1) << "DSS API LOGGING: Action="<< resource_info.getAction() <<"        Resource="<< resource_info.getResourceName() << "        Tenant=" << resource_info.getTenantName() << dendl;
 
+            string source_ip = s->info.env->get("HTTP_X_FORWARDED_FOR","0.0.0.0");
+            keystone_validator.append_header("X-Forwarded-For",source_ip);
             if (isTokenBasedAuth) {
                 keystone_result = keystone_validator.validate_request(resource_info.getAction(),
                                                                       resource_info.getResourceName(),
                                                                       resource_info.getTenantName(),
+                                                                      source_ip,
                                                                       false, /* Is sign auth */
                                                                       false, /* Is copy */
                                                                       false, /* Is cross account */
@@ -1304,6 +1405,7 @@ int RGWPostObj_ObjStore_S3::get_policy()
                 keystone_result = keystone_validator.validate_request(resource_info.getAction(),
                                                                       resource_info.getResourceName(),
                                                                       resource_info.getTenantName(),
+                                                                      source_ip,
                                                                       true, /* Is sign auth */
                                                                       false, /* Is copy */
                                                                       false, /* Is cross account */
@@ -1329,7 +1431,7 @@ int RGWPostObj_ObjStore_S3::get_policy()
                 return -EACCES;
             }
             user_info.user_id = keystone_validator.response.token.tenant.id;
-            user_info.display_name = keystone_validator.response.token.tenant.id; //<<<<<< DSS needs tenant.name
+            user_info.display_name = keystone_validator.response.token.tenant.id;
             /* try to store user if it not already exists */
             if (rgw_get_user_info_by_uid(store, keystone_validator.response.token.tenant.id, user_info) < 0) {
                 int ret = rgw_store_user_info(store, user_info, NULL, NULL, 0, true);
@@ -1454,7 +1556,7 @@ int RGWPostObj_ObjStore_S3::complete_get_params()
   return 0;
 }
 
-int RGWPostObj_ObjStore_S3::get_data(bufferlist& bl)
+int RGWPostObj_ObjStore_S3::get_data(bufferlist& bl,MD5* hash)
 {
   bool boundary;
   bool done;
@@ -1558,7 +1660,6 @@ done:
 
   rgw_flush_formatter_and_reset(s, s->formatter);
 }
-
 
 void RGWDeleteObj_ObjStore_S3::send_response()
 {
@@ -1708,6 +1809,16 @@ int RGWPutACLs_ObjStore_S3::get_policy_from_state(RGWRados *store, struct req_st
   s3policy.to_xml(ss);
 
   return 0;
+}
+
+void RGWRenameObj_ObjStore_S3::send_response()
+{
+  ret = s->err.ret;
+  if (ret)
+    set_req_state_err(s, ret);
+  dump_errno(s);
+  end_header(s, this, "application/xml");
+  dump_start(s);
 }
 
 void RGWPutACLs_ObjStore_S3::send_response()
@@ -2121,8 +2232,12 @@ RGWOp *RGWHandler_ObjStore_Bucket_S3::op_get()
   if (s->info.args.sub_resource_exists("versioning"))
     return new RGWGetBucketVersioning_ObjStore_S3;
 
-  if (s->info.args.sub_resource_exists("website"))
+  if (s->info.args.sub_resource_exists("website")) {
+    if (!s->cct->_conf->rgw_enable_static_website) {
+      return NULL;
+    }
     return new RGWGetBucketWebsite_ObjStore_S3;
+  }
 
   if (is_acl_op()) {
     return new RGWGetACLs_ObjStore_S3;
@@ -2150,8 +2265,12 @@ RGWOp *RGWHandler_ObjStore_Bucket_S3::op_put()
     return NULL;
   if (s->info.args.sub_resource_exists("versioning"))
     return new RGWSetBucketVersioning_ObjStore_S3;
-  if (s->info.args.sub_resource_exists("website"))
+  if (s->info.args.sub_resource_exists("website")) {
+    if (!s->cct->_conf->rgw_enable_static_website) {
+      return NULL;
+    }
     return new RGWSetBucketWebsite_ObjStore_S3;
+  }
   if (is_acl_op()) {
     return new RGWPutACLs_ObjStore_S3;
   } else if (is_cors_op()) {
@@ -2166,8 +2285,12 @@ RGWOp *RGWHandler_ObjStore_Bucket_S3::op_delete()
     return new RGWDeleteCORS_ObjStore_S3;
   }
 
-  if (s->info.args.sub_resource_exists("website"))
+  if (s->info.args.sub_resource_exists("website")) {
+    if (!s->cct->_conf->rgw_enable_static_website) {
+      return NULL;
+    }
     return new RGWDeleteBucketWebsite_ObjStore_S3;
+  }
 
   return new RGWDeleteBucket_ObjStore_S3;
 }
@@ -2220,6 +2343,9 @@ RGWOp *RGWHandler_ObjStore_Obj_S3::op_put()
 {
   if (is_acl_op()) {
     return new RGWPutACLs_ObjStore_S3;
+  }
+  if (store->ctx()->_conf->rgw_enable_rename_op && is_rename_op()) {
+    return new RGWRenameObj_ObjStore_S3;
   }
   if (!s->copy_source)
     return new RGWPutObj_ObjStore_S3;
@@ -2473,6 +2599,7 @@ int RGWHandler_ObjStore_S3::init(RGWRados *store, struct req_state *s, RGWClient
 int RGW_Auth_S3_Keystone_ValidateToken::validate_request(const string& action,
                                                          const string& resource_name,
                                                          const string& tenant_name,
+                                                         const string& source_ip,
                                                          const bool&   is_sign_auth,
                                                          const bool&   is_copy,
                                                          const bool&   is_cross_account,
@@ -2498,7 +2625,7 @@ int RGW_Auth_S3_Keystone_ValidateToken::validate_request(const string& action,
                    || is_url_token
                    || is_infini_url_token);
 
-  /* Infinite URLs should only be used for GET <<<<<< Needs discussion */
+  /* Infinite URLs should only be used for GET */
   if (is_infini_url_token && !(
         (localAction.compare("ListBucket") == 0) ||
         (localAction.compare("GetObject") == 0)  ||
@@ -2507,7 +2634,6 @@ int RGW_Auth_S3_Keystone_ValidateToken::validate_request(const string& action,
               << localAction << dendl;
       return -ENOTRECOVERABLE;
   }
-
   /* Set required headers for keystone request
    * Recursive calls already have headers set */
   if (!is_copy && !is_cross_account) {
@@ -2523,6 +2649,7 @@ int RGW_Auth_S3_Keystone_ValidateToken::validate_request(const string& action,
       append_header("Content-Type", "application/json");
   }
 
+  append_header("X-Forwarded-For",source_ip);
   /* Handle special case of copy */
   bool isCopyAction  = false;
   isCopyAction = (localAction.compare("CopyObject") == 0);
@@ -2534,7 +2661,7 @@ int RGW_Auth_S3_Keystone_ValidateToken::validate_request(const string& action,
       string copy_src_str = copy_src.substr(0, pos);
       string copy_src_tenant = copy_src.substr(pos + 1);
       dout(0) << "DSS INFO: Validating for copy source" << dendl;
-      ret = validate_request(localAction, copy_src_str, copy_src_tenant, is_sign_auth,
+      ret = validate_request(localAction, copy_src_str, copy_src_tenant, source_ip, is_sign_auth,
                              true, is_cross_account, is_url_token, is_infini_url_token, copy_src,
                              token, auth_id, auth_token, auth_sign, objectname, iamerror);
       if (ret < 0) {
@@ -2634,9 +2761,7 @@ int RGW_Auth_S3_Keystone_ValidateToken::validate_request(const string& action,
   string bufferprinter = "";
   tx_buffer.copy(0, tx_buffer.length(), bufferprinter);
   dout(0) << "DSS INFO: \n\n" << dendl;
-  dout(0) << "DSS INFO: Outbound json: " << os.str() << dendl;
-  dout(0) << "DSS INFO: \n\n" << dendl;
-  dout(0) << "DSS INFO: Actual TX buffer: " << bufferprinter << dendl;
+  dout(0) << "DSS INFO: TX buffer: " << bufferprinter << dendl;
   dout(0) << "DSS INFO: \n\n" << dendl;
 
   /* Make request to IAM */
@@ -2680,7 +2805,7 @@ int RGW_Auth_S3_Keystone_ValidateToken::validate_request(const string& action,
       // This case requires cross account validation.
       // Make recursive call with is_cross_account set to true
       dout(0) << "DSS INFO: Validating for cross account access" << dendl;
-      ret = validate_request(localAction, resource_name, tenant_name,
+      ret = validate_request(localAction, resource_name, tenant_name, source_ip,
                              is_sign_auth, is_copy, true,
                              is_url_token, is_infini_url_token, copy_src, token, auth_id,
                              auth_token, auth_sign, objectname, iamerror);
@@ -2829,6 +2954,20 @@ int RGW_Auth_S3::authorize(RGWRados *store, struct req_state *s)
       return -EPERM;
   }
 
+  // Block rename op for illegal cases
+  if (s->info.args.exists("newname")) {
+      if (!(store->ctx()->_conf->rgw_enable_rename_op)) {
+          return -ERR_RENAME_NOT_ENABLED;
+      }
+      if (s->op == OP_PUT) {
+          if ((s->object).name.empty()) {
+              return -ERR_BAD_RENAME_REQ;
+          }
+      } else {
+          return -ERR_BAD_RENAME_REQ;
+      }
+  }
+
   /* neither keystone and rados enabled; warn and exit! */
   if (!store->ctx()->_conf->rgw_s3_auth_use_rados
       && !store->ctx()->_conf->rgw_s3_auth_use_keystone) {
@@ -2858,10 +2997,15 @@ int RGW_Auth_S3::authorize(RGWRados *store, struct req_state *s)
               qsr = true;
           } else {
               /* anonymous access */
-              //<<<<<< You will hit here for sign based req
-              //<<<<<< Add changes for anonymous access. Call a func from here.
+              
+            bool is_s3website = (s->prot_flags & RGW_REST_WEBSITE);
+            if (is_s3website)
+            {
               init_anon_user(s);
               return 0;
+            }
+            else
+              return -EPERM;
           }
       } else {
           // strncmp returns 0 on match. If even one of AWS or JCS match, dont return -EINVAL.
@@ -2909,12 +3053,17 @@ int RGW_Auth_S3::authorize(RGWRados *store, struct req_state *s)
       if (s != NULL) {
           resource_object_name = s->object.name;
       }
-      dout(1) << "DSS API LOGGING: Action="<< resource_info.getAction() <<"        Resource="<< resource_info.getResourceName() << "        Tenant=" << resource_info.getTenantName() << "        Object=" << resource_object_name << dendl;
-
+      string source_ip = s->info.env->get("HTTP_X_FORWARDED_FOR","0.0.0.0");
+      dout(1) << "DSS API LOGGING: Action="
+              << resource_info.getAction()
+              << "        Resource="<< resource_info.getResourceName()
+              << "        Tenant=" << resource_info.getTenantName()
+              << "        Object=" << resource_object_name << dendl;
       if (isTokenBasedAuth) {
           keystone_result = keystone_validator.validate_request(resource_info.getAction(),
                                                                 resource_info.getResourceName(),
                                                                 resource_info.getTenantName(),
+                                                                source_ip,
                                                                 false, /* Is sign auth */
                                                                 false, /* Is copy */
                                                                 false, /* Is cross account */
@@ -2927,11 +3076,12 @@ int RGW_Auth_S3::authorize(RGWRados *store, struct req_state *s)
                                                                 "",  /* Received signature */
                                                                 resource_object_name,
                                                                 iamerror);
-        
+
       } else {
           keystone_result = keystone_validator.validate_request(resource_info.getAction(),
                                                                 resource_info.getResourceName(),
                                                                 resource_info.getTenantName(),
+                                                                source_ip,
                                                                 true, /* Is sign auth */
                                                                 false, /* Is copy */
                                                                 false, /* Is cross account */
@@ -3093,7 +3243,7 @@ int RGWHandler_Auth_S3::init(RGWRados *store, struct req_state *state, RGWClient
 
 RGWHandler *RGWRESTMgr_S3::get_handler(struct req_state *s)
 {
-  bool is_s3website = enable_s3website && (s->prot_flags & RGW_PROTO_WEBSITE);
+  bool is_s3website = enable_s3website && (s->prot_flags & RGW_REST_WEBSITE);
   int ret = RGWHandler_ObjStore_S3::init_from_header(s, is_s3website ? RGW_FORMAT_HTML : RGW_FORMAT_XML, false);
   if (ret < 0)
     return NULL;
@@ -3126,7 +3276,7 @@ int RGWHandler_ObjStore_S3Website::retarget(RGWOp *op, RGWOp **new_op) {
   *new_op = op;
   ldout(s->cct, 10) << __func__ << "Starting retarget" << dendl;
 
-  if (!(s->prot_flags & RGW_PROTO_WEBSITE))
+  if (!(s->prot_flags & RGW_REST_WEBSITE))
     return 0;
 
   RGWObjectCtx& obj_ctx = *static_cast<RGWObjectCtx *>(s->obj_ctx);
@@ -3159,14 +3309,10 @@ int RGWHandler_ObjStore_S3Website::retarget(RGWOp *op, RGWOp **new_op) {
     return -ERR_WEBSITE_REDIRECT;
   }
 
-#warning FIXME
-#if 0
-  if (s->object.empty() != new_obj.empty()) {
-    op->put();
-    s->object = new_obj;
-    *new_op = get_op();
-  }
-#endif
+  /*
+   * FIXME: if s->object != new_obj, drop op and create a new op to handle operation. Or
+   * remove this comment if it's not applicable anymore
+   */
 
   s->object = new_obj;
 
@@ -3183,42 +3329,87 @@ RGWOp *RGWHandler_ObjStore_S3Website::op_head()
   return get_obj_op(false);
 }
 
-int RGWHandler_ObjStore_S3Website::get_errordoc(const string errordoc_key, string *error_content) {
-    ldout(s->cct, 20) << "TODO Serve Custom error page here if bucket has <Error>" << dendl;
-    *error_content = errordoc_key;
-    // 1. Check if errordoc exists
-    // 2. Check if errordoc is public
-    // 3. Fetch errordoc content
-#warning 2015119: FIXME need to clear all
-    RGWGetObj_ObjStore_S3Website *getop = new RGWGetObj_ObjStore_S3Website(true);
-    getop->set_get_data(true);
-    getop->init(store, s, this);
+int RGWHandler_ObjStore_S3Website::serve_errordoc(int http_ret, const string& errordoc_key) {
+  int ret = 0;
+  s->formatter->reset(); /* Try to throw it all away */
 
-    RGWGetObj_CB cb(getop);
-    rgw_obj obj(s->bucket, errordoc_key);
-    RGWObjectCtx rctx(store);
-    //RGWRados::Object op_target(store, s->bucket_info, *static_cast<RGWObjectCtx *>(s->obj_ctx), obj);
-    RGWRados::Object op_target(store, s->bucket_info, rctx, obj);
-    RGWRados::Object::Read read_op(&op_target);
+  RGWGetObj_ObjStore_S3Website* getop = (RGWGetObj_ObjStore_S3Website*) op_get();
+  if(!getop) {
+    return -1; // Trigger double error handler
+  }
+  getop->init(store, s, this);
+  /*getop->range_str = NULL;
+  getop->if_mod = NULL;
+  getop->if_unmod = NULL;
+  getop->if_match = NULL;
+  getop->if_nomatch = NULL;*/
+  s->object = errordoc_key;
 
-    int ret;
-    int64_t ofs = 0; 
-    int64_t end = -1;
-    ret = read_op.prepare(&ofs, &end);
-    if (ret < 0)
-      return ret;
+  ret = init_permissions(getop);
+  if (ret < 0) {
+    ldout(s->cct, 20) << "serve_errordoc failed, init_permissions ret=" << ret << dendl;
+    return -1; // Trigger double error handler
+  }
 
-    ret = read_op.iterate(ofs, end, &cb); // FIXME: need to know the final size?
-    return ret;
+  ret = read_permissions(getop);
+  if (ret < 0) {
+    ldout(s->cct, 20) << "serve_errordoc failed, read_permissions ret=" << ret << dendl;
+    return -1; // Trigger double error handler
+  }
+
+  if (http_ret) {
+     getop->set_custom_http_response(http_ret);
+  }
+
+  ret = getop->init_processing();
+  if (ret < 0) {
+    ldout(s->cct, 20) << "serve_errordoc failed, init_processing ret=" << ret << dendl;
+    return -1; // Trigger double error handler
+  }
+
+  ret = getop->verify_op_mask();
+  if (ret < 0) {
+    ldout(s->cct, 20) << "serve_errordoc failed, verify_op_mask ret=" << ret << dendl;
+    return -1; // Trigger double error handler
+  }
+
+  ret = getop->verify_permission();
+  if (ret < 0) {
+    ldout(s->cct, 20) << "serve_errordoc failed, verify_permission ret=" << ret << dendl;
+    return -1; // Trigger double error handler
+  }
+
+  ret = getop->verify_params();
+  if (ret < 0) {
+    ldout(s->cct, 20) << "serve_errordoc failed, verify_params ret=" << ret << dendl;
+    return -1; // Trigger double error handler
+  }
+
+  // No going back now
+  getop->pre_exec();
+  /*
+   * FIXME Missing headers:
+   * With a working errordoc, the s3 error fields are rendered as HTTP headers,
+   *   x-amz-error-code: NoSuchKey
+   *   x-amz-error-message: The specified key does not exist.
+   *   x-amz-error-detail-Key: foo
+   */
+  getop->execute();
+  getop->complete();
+  return 0;
+
 }
-  
-int RGWHandler_ObjStore_S3Website::error_handler(int err_no, string *error_content) {
-  const struct rgw_http_errors *r;
+
+int RGWHandler_ObjStore_S3Website::error_handler(int err_no,
+					    string* error_content) {
+  int new_err_no = -1;
+  const struct rgw_http_errors* r;
   int http_error_code = -1;
-  r = search_err(err_no, RGW_HTTP_ERRORS, ARRAY_LEN(RGW_HTTP_ERRORS));
+  r = search_err(err_no > 0 ? err_no : -err_no, RGW_HTTP_ERRORS, ARRAY_LEN(RGW_HTTP_ERRORS));
   if (r) {
     http_error_code = r->http_ret;
   }
+  ldout(s->cct, 10) << "RGWHandler_ObjStore_S3Website::error_handler err_no=" << err_no << " http_ret=" << http_error_code << dendl;
 
   RGWBWRoutingRule rrule;
   bool should_redirect = s->bucket_info.website_conf.should_redirect(s->object.name, http_error_code, &rrule);
@@ -3233,8 +3424,18 @@ int RGWHandler_ObjStore_S3Website::error_handler(int err_no, string *error_conte
       s->err.http_ret = redirect_code; // Apply a custom HTTP response code
     ldout(s->cct, 10) << "error handler redirect code=" << redirect_code << " proto+host:" << protocol << "://" << hostname << " -> " << s->redirect << dendl;
     return -ERR_WEBSITE_REDIRECT;
+  } else if (err_no == -ERR_WEBSITE_REDIRECT) {
+    // Do nothing here, this redirect will be handled in abort_early's ERR_WEBSITE_REDIRECT block
+    // Do NOT fire the ErrorDoc handler
   } else if (!s->bucket_info.website_conf.error_doc.empty()) {
-    RGWHandler_ObjStore_S3Website::get_errordoc(s->bucket_info.website_conf.error_doc, error_content);
+    /* This serves an entire page!
+       On success, it will return zero, and no further content should be sent to the socket
+       On failure, we need the double-error handler
+     */
+    new_err_no = RGWHandler_ObjStore_S3Website::serve_errordoc(http_error_code, s->bucket_info.website_conf.error_doc);
+    if(new_err_no && new_err_no != -1) {
+      err_no = new_err_no;
+    }
   } else {
     ldout(s->cct, 20) << "No special error handling today!" << dendl;
   }
@@ -3481,4 +3682,115 @@ bool RGWResourceKeystoneInfo::get_bucket_public_perm(const string& action,
     is_public_bucket = false;
     reason = "OK";
     return true;
+}
+
+// Make a kms request for encrypted as well as decrypted key/iv
+// We will use encrypted keys to store in xattr
+// Decrypted keys,iv will be used to encode data
+int RGW_KMS::make_kms_encrypt_request(string &root_account, RGWKmsData* kmsdata) 
+{
+  string kms_url = cct->_conf->rgw_kms_encrypt_url;
+  if (kms_url[kms_url.size() -1] != '/') {
+    kms_url.append("?"); 
+  }
+  else
+    kms_url[kms_url.size() -1] = '?';
+
+  kms_url.append("user_id=");
+  kms_url.append(root_account);
+  dout(0)<< "SSEINFO Final KMS URL " << kms_url << dendl;
+  int ret = 1 ;
+  
+  string empty ;
+  set_tx_buffer(empty);
+  utime_t begin_time = ceph_clock_now(g_ceph_context);
+  ret = process("GET", kms_url.c_str());
+  utime_t end_time = ceph_clock_now(g_ceph_context);
+  end_time = end_time - begin_time;
+  dout(0) << "SSEINFO: KMS Encrypt response time (milliseconds): " << end_time.to_msec() << dendl;
+
+  if (ret < 0)
+  {
+    ret = -ERR_INTERNAL_ERROR;
+    dout(0) << " Unable to obtain encryped and decrypted keys from KMS "<< dendl;
+    return ret; 
+  }
+
+  //string bufferprinter = "";
+  //rx_buffer.copy(0, rx_buffer.length(), bufferprinter);
+  //dout(0) << "SSEINFO Printing RX buffer: " << bufferprinter << dendl; 
+
+  ret = kmsdata->decode_json_enc(rx_buffer, cct); 
+  if (ret < 0)
+  {
+    ret = -ERR_INTERNAL_ERROR;
+    return ret; 
+  }
+  
+  if (kmsdata->key_dec.size() != 64 || kmsdata->iv_dec.size() != 16)
+  {
+    dout(0) << "SSEINFO KMS Key Size " << kmsdata->key_dec.size() << " or IV Size not right" << " " << kmsdata->iv_dec.size() << dendl;
+    ret = -ERR_INTERNAL_ERROR; 
+    return ret; 
+  }
+
+  dout(0) << " SSEINFO After parsing " << kmsdata->key_dec << " & " << kmsdata->iv_dec << dendl; 
+  return 1;
+}
+
+
+// Make a kms call for decrypted key/iv
+// We extract encrypted keys from xattr
+// Decrypted keys,iv will be used to decode data
+int RGW_KMS::make_kms_decrypt_request(string &root_account, RGWKmsData* kmsdata)
+{
+  string kms_url = cct->_conf->rgw_kms_decrypt_url;
+  if (kms_url[kms_url.size()] -1 != '/') {
+    kms_url.append("?"); 
+  }
+  kms_url.append("user_id=");
+  kms_url.append(root_account);
+  kms_url.append("&encrypted_data_key=");
+  kms_url.append(kmsdata->key_enc);
+  kms_url.append("&encrypted_data_iv=");
+  kms_url.append(kmsdata->iv_enc);
+  kms_url.append("&encryptedMKVersionId=");
+  kms_url.append(kmsdata->mkey_enc);
+  kms_url.append("&randomId=");
+  int id = rand() % 900000 + 100000;
+  char* cid = new char[7];
+  sprintf(cid,"%d",id);
+  kms_url.append(cid);
+  dout(0)<< "SSEINFO Final URL  For Decoding KMS" << kms_url << dendl;
+  string empty ;
+  set_tx_buffer(empty);
+  int ret = 1;
+
+  utime_t begin_time = ceph_clock_now(g_ceph_context);
+  ret = process("GET", kms_url.c_str());
+  utime_t end_time = ceph_clock_now(g_ceph_context);
+  end_time = end_time - begin_time;
+  
+  dout(0) << "SSEINFO: KMS Decrypt response time (milliseconds): " << end_time.to_msec() << dendl;
+  if (ret < 0)
+  {
+    ret = -ERR_INTERNAL_ERROR;
+    dout(0) << " Unable to obtain encryped and decrypted keys from KMS "<< dendl;
+    return ret; 
+  }
+  
+  string bufferprinter = "";
+  rx_buffer.copy(0, rx_buffer.length(), bufferprinter);
+  dout(0) << "SSEINFO Printing RX buffer: " << bufferprinter << dendl; 
+
+  ret = kmsdata->decode_json_dec(rx_buffer, cct); 
+  if (ret < 0)
+  {
+    ret = -ERR_INTERNAL_ERROR;
+    return ret; 
+  }
+
+  dout(0) << " SSEINFO After parsing " << kmsdata->key_dec << " & " << kmsdata->iv_dec << dendl; 
+  
+  return 0;
 }

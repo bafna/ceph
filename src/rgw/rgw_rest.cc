@@ -5,8 +5,6 @@
 #include <limits.h>
 
 #include "common/Formatter.h"
-#include "common/JSONFormatter.h"
-#include "common/XMLFormatter.h"
 #include "common/HTMLFormatter.h"
 #include "common/utf8.h"
 #include "include/str_list.h"
@@ -46,6 +44,11 @@ static struct rgw_http_attr rgw_to_http_attr_list[] = {
   { RGW_ATTR_CONTENT_ENC, "Content-Encoding"},
   { RGW_ATTR_USER_MANIFEST, "X-Object-Manifest"},
   { RGW_ATTR_AMZ_WEBSITE_REDIRECT_LOCATION, "Location"},
+  /* RGW_ATTR_AMZ_WEBSITE_REDIRECT_LOCATION header depends on access mode:
+   * S3 endpoint: x-amz-website-redirect-location
+   * S3Website endpoint: Location
+   */
+  { RGW_ATTR_AMZ_WEBSITE_REDIRECT_LOCATION, "x-amz-website-redirect-location" },
   { NULL, NULL},
 };
 
@@ -313,7 +316,7 @@ void set_req_state_err(struct req_state *s, int err_no)
     err_no = -err_no;
   s->err.ret = -err_no;
 
-  if (s->prot_flags & RGW_PROTO_SWIFT) {
+  if (s->prot_flags & RGW_REST_SWIFT) {
     r = search_err(err_no, RGW_HTTP_SWIFT_ERRORS, ARRAY_LEN(RGW_HTTP_SWIFT_ERRORS));
     if (r) {
       s->err.http_ret = r->http_ret;
@@ -327,17 +330,8 @@ void set_req_state_err(struct req_state *s, int err_no)
 
   r = search_err(err_no, RGW_HTTP_ERRORS, ARRAY_LEN(RGW_HTTP_ERRORS));
   if (r) {
-    if (s->prot_flags & RGW_PROTO_WEBSITE && err_no == ERR_WEBSITE_REDIRECT && !s->err.is_clear()) {
-      // http_ret was custom set, so don't change it!
-    } else {
-      s->err.http_ret = r->http_ret;
-    }
+    s->err.http_ret = r->http_ret;
     s->err.s3_code = r->s3_code;
-      if (r->s3_err_message) {
-          if ((s->err.message).empty()) {
-		s->err.message = r->s3_err_message;	
-          }
-      }
     return;
   }
   dout(0) << "WARNING: set_req_state_err err_no=" << err_no << " resorting to 500" << dendl;
@@ -357,7 +351,7 @@ void dump_errno(struct req_state *s, int err)
 {
   char buf[32];
   snprintf(buf, sizeof(buf), "%d", err);
-  dump_status(s, buf, http_status_names[s->err.http_ret]);
+  dump_status(s, buf, http_status_names[err]);
 }
 
 void dump_string_header(struct req_state *s, const char *name, const char *val)
@@ -383,7 +377,7 @@ void dump_content_length(struct req_state *s, uint64_t len)
 void dump_etag(struct req_state *s, const char *etag)
 {
   int r;
-  if (s->prot_flags & RGW_PROTO_SWIFT) {
+  if (s->prot_flags & RGW_REST_SWIFT) {
     r = s->cio->print("etag: %s\r\n", etag);
   }
   else 
@@ -548,7 +542,7 @@ void dump_start(struct req_state *s)
 
 void dump_trans_id(req_state *s)
 {
-  if (s->prot_flags & RGW_PROTO_SWIFT) {
+  if (s->prot_flags & RGW_REST_SWIFT) {
     s->cio->print("X-Trans-Id: %s\r\n", s->trans_id.c_str());
   }
   else {
@@ -585,6 +579,7 @@ void end_header(struct req_state *s, RGWOp *op, const char *content_type, const 
   bool is_options_request = (s->op == OP_OPTIONS);
   bool is_get_request = (s->op == OP_GET);
   bool is_put_request = (s->op == OP_PUT);
+  bool can_encrypted = op && ((op->get_type() == RGW_OP_INIT_MULTIPART) || (op->get_type() == RGW_OP_PUT_OBJ));
   char *allowed_origins = new char[s->cct->_conf->rgw_cors_allowed_origin.length() + 1];
   strcpy(allowed_origins, s->cct->_conf->rgw_cors_allowed_origin.c_str());
   const char *orig = s->info.env->get("HTTP_ORIGIN");
@@ -606,6 +601,22 @@ void end_header(struct req_state *s, RGWOp *op, const char *content_type, const 
       ldout(s->cct, 0) << "WARNING: No matching allowed origin found in config, check ORIGIN header, will not send CORS headers" << dendl;
     }
   }
+
+  if (can_encrypted)
+  {
+    const char* is_enc; 
+    is_enc = s->info.env->get("HTTP_X_AMZ_SERVER_SIDE_ENCRYPTION");
+
+    if (!is_enc)
+      is_enc = s->info.env->get("HTTP_X_JCS_SERVER_SIDE_ENCRYPTION");
+
+    if (is_enc && (strcmp(is_enc,"AES256") == 0))
+    {
+      s->cio->print("x-jcs-server-side-encryption-customer: %s\r\n", is_enc);
+    }
+  }
+
+
       
   if((is_send_cors_headers) &&  (is_token_based_request || is_options_request)) {
     string allowed_methods = s->cct->_conf->rgw_cors_allowed_methods; 
@@ -626,7 +637,7 @@ void end_header(struct req_state *s, RGWOp *op, const char *content_type, const 
   delete [] allowed_origins;
 
 
-  if (s->prot_flags & RGW_PROTO_SWIFT && !content_type) {
+  if (s->prot_flags & RGW_REST_SWIFT && !content_type) {
     force_content_type = true;
   }
 
@@ -647,7 +658,7 @@ void end_header(struct req_state *s, RGWOp *op, const char *content_type, const 
       ctype = "text/plain";
       break;
     }
-    if (s->prot_flags & RGW_PROTO_SWIFT)
+    if (s->prot_flags & RGW_REST_SWIFT)
       ctype.append("; charset=utf-8");
     content_type = ctype.c_str();
   }
@@ -712,40 +723,56 @@ void abort_early(struct req_state *s, RGWOp *op, int err_no, RGWHandler* handler
     ldout(s->cct, 20) << "handler->ERRORHANDLER: err_no=" << err_no << " new_err_no=" << new_err_no << dendl;
     err_no = new_err_no;
   }
-  set_req_state_err(s, err_no);
-  dump_errno(s);
-  dump_bucket_from_state(s);
-  if (err_no == -ERR_PERMANENT_REDIRECT || err_no == -ERR_WEBSITE_REDIRECT) {
-    string dest_uri;
-    if (!s->redirect.empty()) {
-      dest_uri = s->redirect;
-    } else if (!s->region_endpoint.empty()) {
-      string dest_uri = s->region_endpoint;
-      /*
-       * reqest_uri is always start with slash, so we need to remove
-       * the unnecessary slash at the end of dest_uri.
-       */
-      if (dest_uri[dest_uri.size() - 1] == '/') {
-        dest_uri = dest_uri.substr(0, dest_uri.size() - 1);
+
+  // If the error handler(s) above dealt with it completely, they should have
+  // returned 0. If non-zero, we need to continue here.
+  if (err_no) {
+    // Watch out, we might have a custom error state already set!
+    if (s->err.http_ret && s->err.http_ret != 200) {
+      dump_errno(s);
+    } else {
+      set_req_state_err(s, err_no);
+      dump_errno(s);
+    }
+    dump_bucket_from_state(s);
+    if (err_no == -ERR_PERMANENT_REDIRECT || err_no == -ERR_WEBSITE_REDIRECT) {
+      string dest_uri;
+      if (!s->redirect.empty()) {
+        dest_uri = s->redirect;
+      } else if (!s->region_endpoint.empty()) {
+        string dest_uri = s->region_endpoint;
+        /*
+         * reqest_uri is always start with slash, so we need to remove
+         * the unnecessary slash at the end of dest_uri.
+         */
+        if (dest_uri[dest_uri.size() - 1] == '/') {
+          dest_uri = dest_uri.substr(0, dest_uri.size() - 1);
+        }
+        dest_uri += s->info.request_uri;
+        dest_uri += "?";
+        dest_uri += s->info.request_params;
       }
-      dest_uri += s->info.request_uri;
-      dest_uri += "?";
-      dest_uri += s->info.request_params;
+
+      if (!dest_uri.empty()) {
+        dump_redirect(s, dest_uri);
+      }
     }
 
-    if (!dest_uri.empty()) {
-      dump_redirect(s, dest_uri);
+    if (!error_content.empty()) {
+      /*
+       * TODO we must add all error entries as headers here:
+       * when having a working errordoc, then the s3 error fields are
+       * rendered as HTTP headers, e.g.:
+       *   x-amz-error-code: NoSuchKey
+       *   x-amz-error-message: The specified key does not exist.
+       *   x-amz-error-detail-Key: foo
+       */
+      end_header(s, op, NULL, error_content.size(), false, true);
+      s->cio->write(error_content.c_str(), error_content.size());
+    } else {
+      end_header(s, op);
     }
-  }
-  if (!error_content.empty()) {
-    ldout(s->cct, 20) << "error_content is set, we need to serve it INSTEAD of firing the formatter" << dendl;
-#warning TODO we must add all error entries as headers here
-    end_header(s, op, NULL, NO_CONTENT_LENGTH, false, true);
-    s->cio->write(error_content.c_str(), error_content.size());
-    s->formatter->reset();
-  } else {
-    end_header(s, op);
-    rgw_flush_formatter_and_reset(s, s->formatter);
+    rgw_flush_formatter(s, s->formatter);
   }
   perfcounter->inc(l_rgw_failed_req);
 }
@@ -984,7 +1011,7 @@ int RGWPutObj_ObjStore::get_params()
   return 0;
 }
 
-int RGWPutObj_ObjStore::get_data(bufferlist& bl)
+int RGWPutObj_ObjStore::get_data(bufferlist& bl,MD5* hash)
 {
   size_t cl;
   uint64_t chunk_size = s->cct->_conf->rgw_max_chunk_size;
@@ -997,15 +1024,52 @@ int RGWPutObj_ObjStore::get_data(bufferlist& bl)
   }
 
   int len = 0;
-  if (cl) {
-    bufferptr bp(cl);
+  if (cl) 
+  {
+    if (kmsdata && cl > 15)
+    {
+      uint64_t buffer_length = cl;
+      bufferptr bp(buffer_length);
 
-    int read_len; /* cio->read() expects int * */
-    int r = s->cio->read(bp.c_str(), cl, &read_len);
-    len = read_len;
-    if (r < 0)
-      return r;
-    bl.append(bp, 0, len);
+      int read_len; /* cio->read() expects int * */
+      int r = s->cio->read(bp.c_str(), cl, &read_len);
+      if (r < 0)
+        return r;
+      unsigned char* read_data = reinterpret_cast<unsigned char *>(bp.c_str());
+      if (hash && read_len)
+        hash->Update((const byte *)bp.c_str(),bp.length());
+
+      len = read_len;
+      unsigned char* ciphertext = new unsigned char[read_len];
+
+      int  ciphertext_len;
+      /* Encrypt the plaintext */
+      const char* c_key = kmsdata->key_dec.c_str();
+      const char* c_iv = kmsdata->iv_dec.c_str();
+      ciphertext_len = encrypt(read_data, read_len, (unsigned char*)c_key, (unsigned char*)c_iv, ciphertext);
+      if (ciphertext_len == -1)
+      {
+        dout(0) << " Error while encrypting " << dendl;
+        delete [] ciphertext;
+        return -ERR_INTERNAL_ERROR;
+      }
+      dout(0) << "SSEINFO Encryption done " << ciphertext_len  << dendl;
+      bl.append((char*)ciphertext, len);
+      delete [] ciphertext;
+    }
+    else
+    {
+      bufferptr bp(cl);
+      int read_len; /* cio->read() expects int * */
+      int r = s->cio->read(bp.c_str(), cl, &read_len);
+      if (hash && read_len)
+        hash->Update((const byte *)bp.c_str(),bp.length());
+      if (r < 0) {
+        return r;
+      }
+      len = read_len;
+      bl.append(bp, 0, len);
+    }
   }
 
   if ((uint64_t)ofs + len > RGW_MAX_PUT_SIZE) {
@@ -1301,7 +1365,7 @@ int RGWHandler_ObjStore::allocate_formatter(struct req_state *s, int default_typ
       s->formatter = new JSONFormatter(false);
       break;
     case RGW_FORMAT_HTML:
-      s->formatter = new HTMLFormatter(s->prot_flags & RGW_PROTO_WEBSITE);
+      s->formatter = new HTMLFormatter(s->prot_flags & RGW_REST_WEBSITE);
       break;
     default:
       return -EINVAL;
@@ -1374,8 +1438,11 @@ static http_op op_from_method(const char *method)
   return OP_UNKNOWN;
 }
 
-int RGWHandler_ObjStore::init_permissions()
+int RGWHandler_ObjStore::init_permissions(RGWOp *op)
 {
+  if (op->get_type() == RGW_OP_CREATE_BUCKET)
+    return 0;
+
   return do_init_permissions();
 }
 
@@ -1461,9 +1528,6 @@ RGWRESTMgr *RGWRESTMgr::get_resource_mgr(struct req_state *s, const string& uri,
 {
   *out_uri = uri;
 
-  if (resources_by_size.empty())
-    return this;
-
   multimap<size_t, string>::reverse_iterator iter;
 
   for (iter = resources_by_size.rbegin(); iter != resources_by_size.rend(); ++iter) {
@@ -1529,7 +1593,7 @@ int RGWREST::preprocess(struct req_state *s, RGWClientIO *cio)
 	in_hosted_domain = true; // TODO: should hostnames be a strict superset of hostnames_s3website?
         domain = s3website_domain;
         subdomain = s3website_subdomain;
-        s->prot_flags |= RGW_PROTO_WEBSITE;
+        s->prot_flags |= RGW_REST_WEBSITE;
       }
     }
 
@@ -1559,7 +1623,7 @@ int RGWREST::preprocess(struct req_state *s, RGWClientIO *cio)
 	      in_hosted_domain = true; // TODO: should hostnames be a strict superset of hostnames_s3website?
 	      domain = s3website_domain;
 	      subdomain = s3website_subdomain;
-	      s->prot_flags |= RGW_PROTO_WEBSITE;
+	      s->prot_flags |= RGW_REST_WEBSITE;
 	    }
         }
 

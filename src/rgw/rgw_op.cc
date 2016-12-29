@@ -3,9 +3,9 @@
 
 #include <errno.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include <sstream>
-
 #include "common/Clock.h"
 #include "common/armor.h"
 #include "common/mime.h"
@@ -24,7 +24,7 @@
 #include "rgw_multi_del.h"
 #include "rgw_cors.h"
 #include "rgw_cors_s3.h"
-
+#include "rgw_rest_s3.h"
 #include "rgw_client_io.h"
 
 #define dout_subsys ceph_subsys_rgw
@@ -423,7 +423,7 @@ static int rgw_build_bucket_policies(RGWRados *store, struct req_state *s)
     }
   }
 
-  return 0;
+  return ret;
 }
 
 /**
@@ -887,14 +887,17 @@ int RGWGetObj::get_data_cb(bufferlist& bl, off_t bl_ofs, off_t bl_len)
 void RGWGetObj::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWGetObj::execute()
 {
   utime_t start_time = s->time;
-  bufferlist bl;
+  bufferlist bl,keybl,ivbl,mkeybl;
   gc_invalidate_time = ceph_clock_now(s->cct);
   gc_invalidate_time += (s->cct->_conf->rgw_gc_obj_min_wait / 2);
+  RGW_KMS req_kms(s->cct);
+  string root_account = s->bucket_owner_id;
 
   RGWGetObj_CB cb(this);
 
@@ -931,6 +934,20 @@ void RGWGetObj::execute()
   if (ret < 0)
     goto done_err;
 
+  keybl = attrs[RGW_ATTR_KEY];
+  ivbl = attrs[RGW_ATTR_IV];
+  mkeybl = attrs[RGW_ATTR_MKEYVERSION];
+  if (keybl.length())
+  {
+    kmsdata = new RGWKmsData();
+    keybl.copy(0,keybl.length(),kmsdata->key_enc);
+    ivbl.copy(0,ivbl.length(),kmsdata->iv_enc);
+    mkeybl.copy(0,mkeybl.length(),kmsdata->mkey_enc);
+    ret = req_kms.make_kms_decrypt_request(root_account,kmsdata);
+    if (ret < 0)
+      goto done_err;
+    dout(0) << "SSEINFO decrypted key "<< kmsdata->key_dec.c_str() << " iv " << kmsdata->iv_dec.c_str() <<  dendl;
+  }
   attr_iter = attrs.find(RGW_ATTR_USER_MANIFEST);
   if (attr_iter != attrs.end()) {
     ret = handle_user_manifest(attr_iter->second.c_str());
@@ -953,13 +970,22 @@ void RGWGetObj::execute()
   ret = read_op.iterate(ofs, end, &cb);
 
   perfcounter->tinc(l_rgw_get_lat,
-                   (ceph_clock_now(s->cct) - start_time));
+      (ceph_clock_now(s->cct) - start_time));
   if (ret < 0) {
     goto done_err;
   }
 
+  ret = send_response_data(bl, 0, 0);
+  if (ret < 0) {
+    goto done_err;
+  }
+  return;
+
 done_err:
-  send_response_data(bl, 0, 0);
+  send_response_data_error();
+
+  if (kmsdata)
+    delete kmsdata;
 }
 
 int RGWGetObj::init_common()
@@ -1093,6 +1119,7 @@ int RGWGetBucketVersioning::verify_permission()
 void RGWGetBucketVersioning::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWGetBucketVersioning::execute()
@@ -1112,6 +1139,7 @@ int RGWSetBucketVersioning::verify_permission()
 void RGWSetBucketVersioning::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWSetBucketVersioning::execute()
@@ -1146,6 +1174,7 @@ int RGWGetBucketWebsite::verify_permission()
 void RGWGetBucketWebsite::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWGetBucketWebsite::execute()
@@ -1166,6 +1195,7 @@ int RGWSetBucketWebsite::verify_permission()
 void RGWSetBucketWebsite::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWSetBucketWebsite::execute()
@@ -1196,6 +1226,7 @@ int RGWDeleteBucketWebsite::verify_permission()
 void RGWDeleteBucketWebsite::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWDeleteBucketWebsite::execute()
@@ -1221,6 +1252,7 @@ int RGWStatBucket::verify_permission()
 void RGWStatBucket::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWStatBucket::execute()
@@ -1273,6 +1305,7 @@ int RGWListBucket::parse_max_keys()
 void RGWListBucket::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWListBucket::execute()
@@ -1378,6 +1411,7 @@ void RGWCreateBucket::pre_exec()
     ret = dialect_handler->validate_bucket_name(s->bucket_name_str, s->cct->_conf->rgw_s3_bucket_name_create_strictness);
 
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWCreateBucket::execute()
@@ -1510,7 +1544,8 @@ void RGWCreateBucket::execute()
       ldout(s->cct, 0) << "WARNING: failed to unlink bucket: ret=" << ret << dendl;
     }
   } else if (ret == -EEXIST || (ret == 0 && existed)) {
-      ret = -ERR_BUCKET_EXISTS;
+    ret = 0;
+    exist_ret = -ERR_BUCKET_EXISTS;
   }
 }
 
@@ -1525,6 +1560,7 @@ int RGWDeleteBucket::verify_permission()
 void RGWDeleteBucket::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWDeleteBucket::execute()
@@ -1598,7 +1634,7 @@ class RGWPutObjProcessor_Multipart : public RGWPutObjProcessor_Atomic
   string upload_id;
 
 protected:
-  int prepare(RGWRados *store, string *oid_rand);
+  int prepare(RGWRados *store, string *oid_rand, RGWKmsData** kmsdata=NULL); 
   int do_complete(string& etag, time_t *mtime, time_t set_mtime,
                   map<string, bufferlist>& attrs,
                   const char *if_match = NULL, const char *if_nomatch = NULL);
@@ -1609,7 +1645,7 @@ public:
                    RGWPutObjProcessor_Atomic(obj_ctx, bucket_info, _s->bucket, _s->object.name, _p, _s->req_id, false), s(_s) {}
 };
 
-int RGWPutObjProcessor_Multipart::prepare(RGWRados *store, string *oid_rand)
+int RGWPutObjProcessor_Multipart::prepare(RGWRados *store, string *oid_rand, RGWKmsData** kmsdata)
 {
   int r = prepare_init(store, NULL);
   if (r < 0) {
@@ -1638,6 +1674,37 @@ int RGWPutObjProcessor_Multipart::prepare(RGWRados *store, string *oid_rand)
     return -EINVAL;
   }
 
+  rgw_obj meta_obj;
+  string meta_oid;
+  map<string, bufferlist> attrs;
+  meta_oid = mp.get_meta();
+  meta_obj.init_ns(s->bucket, meta_oid, mp_ns);
+  meta_obj.set_in_extra_data(true);
+  meta_obj.index_hash_source = s->object.name;
+  int ret;
+
+  ret = get_obj_attrs(store, s, meta_obj, attrs);
+  if (ret < 0) {
+    ldout(s->cct, 0) << "ERROR: failed to get obj attrs, obj=" << meta_obj << " ret=" << ret << dendl;
+    //return;
+  }
+  else {
+    RGW_KMS req_kms(s->cct);
+    string root_account = s->bucket_owner_id;
+    bufferlist keybl = attrs[RGW_ATTR_KEY];
+    bufferlist ivbl = attrs[RGW_ATTR_IV];
+    bufferlist mkeybl = attrs[RGW_ATTR_MKEYVERSION];
+    if (keybl.length() > 0)
+    {
+      *kmsdata = new RGWKmsData();
+      keybl.copy(0,keybl.length(),(*kmsdata)->key_enc);
+      ivbl.copy(0,ivbl.length(),(*kmsdata)->iv_enc);
+      mkeybl.copy(0,mkeybl.length(),(*kmsdata)->mkey_enc);
+      ret = req_kms.make_kms_decrypt_request(root_account,*kmsdata);
+      if (ret < 0)
+        return ret;
+    }
+  }
   string upload_prefix = oid + ".";
 
   if (!oid_rand) {
@@ -1758,6 +1825,7 @@ void RGWPutObj::dispose_processor(RGWPutObjProcessor *processor)
 void RGWPutObj::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 static int put_data_and_throttle(RGWPutObjProcessor *processor, bufferlist& data, off_t ofs,
@@ -1815,12 +1883,15 @@ void RGWPutObj::execute()
   char calc_md5[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 1];
   unsigned char m[CEPH_CRYPTO_MD5_DIGESTSIZE];
   MD5 hash;
-  bufferlist bl, aclbl;
+  bufferlist bl, aclbl,keybl,ivbl,mkeybl;
   map<string, bufferlist> attrs;
   int len;
   map<string, string>::iterator iter;
-  bool multipart;
-
+  bool multipart, is_encrypted = false;
+  int i = 0;
+  bool exists;
+  const char* is_enc; 
+ 
   bool need_calc_md5 = (obj_manifest == NULL);
 
 
@@ -1870,14 +1941,45 @@ void RGWPutObj::execute()
   }
 
   processor = select_processor(*(RGWObjectCtx *)s->obj_ctx, &multipart);
+  is_enc = s->info.env->get("HTTP_X_AMZ_SERVER_SIDE_ENCRYPTION");
 
-  ret = processor->prepare(store, NULL);
+  if (!is_enc)
+    is_enc = s->info.env->get("HTTP_X_JCS_SERVER_SIDE_ENCRYPTION");
+  
+  if (is_enc && (strcmp(is_enc,"AES256") != 0))
+  {
+    // wrong value algo. Error out
+    ret = -ERR_INVALID_ENC_ALGO;
+    goto done;
+  }
+  else if (is_enc)
+    is_encrypted = true;
+
+  if (!multipart && is_encrypted)
+  {
+    RGW_KMS req_kms(s->cct);
+    kmsdata = new RGWKmsData();
+    string root_account = s->bucket_owner_id;
+    ret = req_kms.make_kms_encrypt_request(root_account,kmsdata);
+    if (ret < 0)
+      goto done;
+    //Get the key from KMS and store it as attribute
+    keybl.append(kmsdata->key_enc.c_str());
+    ivbl.append(kmsdata->iv_enc.c_str());
+    mkeybl.append(kmsdata->mkey_enc.c_str());
+    attrs[RGW_ATTR_KEY] = keybl;
+    attrs[RGW_ATTR_IV] = ivbl;
+    attrs[RGW_ATTR_MKEYVERSION] = mkeybl;
+  }
+
+  //For multipart, the key gets populated here
+  ret = processor->prepare(store, NULL, &kmsdata);
   if (ret < 0)
     goto done;
-
   do {
+    i++;
     bufferlist data;
-    len = get_data(data);
+    len = get_data(data,&hash);
     if (len < 0) {
       ret = len;
       goto done;
@@ -2023,6 +2125,8 @@ done:
   dispose_processor(processor);
   perfcounter->tinc(l_rgw_put_lat,
                    (ceph_clock_now(s->cct) - s->time));
+  if (kmsdata)
+    delete kmsdata;
 }
 
 int RGWPostObj::verify_permission()
@@ -2049,6 +2153,7 @@ void RGWPostObj::dispose_processor(RGWPutObjProcessor *processor)
 void RGWPostObj::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWPostObj::execute()
@@ -2292,12 +2397,14 @@ int RGWDeleteObj::verify_permission()
 void RGWDeleteObj::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWDeleteObj::execute()
 {
   ret = -EINVAL;
   rgw_obj obj(s->bucket, s->object);
+
   if (!s->object.empty()) {
     RGWObjectCtx *obj_ctx = (RGWObjectCtx *)s->obj_ctx;
 
@@ -2338,7 +2445,6 @@ bool RGWCopyObj::parse_copy_location(const string& url_src, string& bucket_name,
 
 
   string dec_src;
-
   url_decode(name_str, dec_src);
   const char *src = dec_src.c_str();
 
@@ -2497,6 +2603,7 @@ void RGWCopyObj::progress_cb(off_t ofs)
 void RGWCopyObj::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWCopyObj::execute()
@@ -2555,6 +2662,7 @@ int RGWGetACLs::verify_permission()
 void RGWGetACLs::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWGetACLs::execute()
@@ -2585,6 +2693,7 @@ int RGWPutACLs::verify_permission()
 void RGWPutACLs::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWPutACLs::execute()
@@ -2850,6 +2959,7 @@ int RGWInitMultipart::verify_permission()
 void RGWInitMultipart::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWInitMultipart::execute()
@@ -2858,6 +2968,9 @@ void RGWInitMultipart::execute()
   map<string, bufferlist> attrs;
   rgw_obj obj;
   map<string, string>::iterator iter;
+  bool is_encrypted = false;
+  bufferlist keybl,ivbl,mkeybl;
+  string key,iv;
 
   if (get_params() < 0)
     return;
@@ -2868,6 +2981,41 @@ void RGWInitMultipart::execute()
   policy.encode(aclbl);
 
   attrs[RGW_ATTR_ACL] = aclbl;
+
+  const char* is_enc = s->info.env->get("HTTP_X_AMZ_SERVER_SIDE_ENCRYPTION");
+
+  if (!is_enc)
+    is_enc = s->info.env->get("HTTP_X_JCS_SERVER_SIDE_ENCRYPTION");
+
+  //Get the key from KMS and store it as attribute
+  if (is_enc && (strcmp(is_enc,"AES256") != 0))
+  {
+    // wrong value algo. Error out
+    ret = -ERR_INVALID_ENC_ALGO;
+    return;
+  }
+  else if (is_enc)
+    is_encrypted = true;
+
+  is_encrypted = (is_enc) ? (strcmp(is_enc,"AES256")== 0) : false ; 
+  if (is_encrypted)
+  {
+    RGW_KMS req_kms(s->cct);
+    RGWKmsData* kmsdata = new RGWKmsData();
+    string root_account = s->bucket_owner_id;
+    ret = req_kms.make_kms_encrypt_request(root_account,kmsdata);
+    if (ret < 0)
+      return;
+    //Get the key from KMS and store it as attribute
+    dout(0) << "SSEINFO : Multipart uploading with key " << key << dendl;
+    keybl.append(kmsdata->key_enc.c_str());
+    ivbl.append(kmsdata->iv_enc.c_str());
+    mkeybl.append(kmsdata->mkey_enc.c_str());
+    attrs[RGW_ATTR_KEY] = keybl;
+    attrs[RGW_ATTR_IV] = ivbl;
+    attrs[RGW_ATTR_MKEYVERSION] = mkeybl;
+    delete kmsdata;
+  }
 
   for (iter = s->generic_attrs.begin(); iter != s->generic_attrs.end(); ++iter) {
     bufferlist& attrbl = attrs[iter->first];
@@ -3046,6 +3194,7 @@ int RGWCompleteMultipart::verify_permission()
 void RGWCompleteMultipart::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWCompleteMultipart::execute()
@@ -3245,6 +3394,7 @@ int RGWAbortMultipart::verify_permission()
 void RGWAbortMultipart::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWAbortMultipart::execute()
@@ -3346,6 +3496,7 @@ int RGWListMultipart::verify_permission()
 void RGWListMultipart::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWListMultipart::execute()
@@ -3379,6 +3530,7 @@ int RGWListBucketMultiparts::verify_permission()
 void RGWListBucketMultiparts::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWListBucketMultiparts::execute()
@@ -3390,7 +3542,7 @@ void RGWListBucketMultiparts::execute()
   if (ret < 0)
     return;
 
-  if (s->prot_flags & RGW_PROTO_SWIFT) {
+  if (s->prot_flags & RGW_REST_SWIFT) {
     string path_args;
     path_args = s->info.args.get("path");
     if (!path_args.empty()) {
@@ -3439,6 +3591,7 @@ int RGWDeleteMultiObj::verify_permission()
 void RGWDeleteMultiObj::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWDeleteMultiObj::execute()
@@ -3613,3 +3766,223 @@ int RGWHandler::error_handler(int err_no, string *error_content) {
   // This is the do-nothing error handler
   return err_no;
 }
+/* Object Rename operation */
+
+int RGWRenameObj::verify_permission()
+{
+    // This function used to check ACLs in legacy code
+    // DSS does not require this.
+    return 0;
+}
+
+void RGWRenameObj::pre_exec()
+{
+  rgw_bucket_object_pre_exec(s);
+}
+
+void RGWRenameObj::execute()
+{
+    ret = 0;
+    s->err.ret = 0;
+    rgw_obj_key orig_object, new_obj;
+    orig_object.dss_duplicate(&(s->object));
+    string copysource, raw_copy_source;
+    int ret_orig, ret_newobj;
+    RGWCopyObj_ObjStore_S3* copy_op = NULL;
+    RGWDeleteObj_ObjStore_S3* del_op = NULL;
+    RGWDeleteObj_ObjStore_S3* ndel_op = NULL;
+
+    /* Check if the original object exists */
+    ret = check_obj(orig_object);
+    if (ret < 0) {
+        // The passed original object does not exist
+        s->err.ret = ret;
+        return;
+    }
+
+    /* Tweek request params to make this a copy request */
+    (s->object).name = s->info.args.get("newname");
+    ret = check_obj(s->object);
+    if (ret >= 0) {
+        ldout(s->cct, 0) << "DSS ERROR: Target object already exists." << dendl;
+        s->err.http_ret = 403;
+        s->err.ret = -ERR_RENAME_OBJ_EXISTS;
+        return;
+    }
+    raw_copy_source = get_raw_copy_source();
+    copysource = s->bucket_name_str;
+    copysource.append("/");
+    copysource.append(orig_object.name);
+    ldout(s->cct, 0) << "DSS INFO: Converting to copy request. s->object: "
+                     << (s->object).name << ". Copy source: " << copysource << dendl;
+    s->info.env->set("HTTP_X_JCS_COPY_SOURCE", copysource.c_str());
+    s->info.env->set("HTTP_X_JCS_METADATA_DIRECTIVE", "COPY");
+    s->copy_source = s->info.env->get("HTTP_X_JCS_COPY_SOURCE");
+    ldout(s->cct, 0) << "DSS INFO: The raw copy location to be parsed: " << raw_copy_source <<dendl;
+    if (s->copy_source) {
+      ret = RGWCopyObj::parse_copy_location(raw_copy_source, s->src_bucket_name, s->src_object);
+      ldout(s->cct, 0) << "DSS INFO: final source key name: " << s->src_object << " and bucket name: " << s->src_bucket_name << dendl;
+      if (!ret) { //Surprizingly returns bool
+        ldout(s->cct, 0) << "DSS ERROR: Rename op failed to parse copy location" << dendl;
+        s->err.ret = -ERR_RENAME_FAILED;
+        s->err.http_ret = 403;
+        return;
+      }
+    }
+
+    /* Perform copy operation */
+    copy_op = new RGWCopyObj_ObjStore_S3;
+    perform_external_op(copy_op);
+
+    if ((s->err.http_ret != 200) ||
+        (s->err.ret != 0)) {
+        ldout(s->cct, 0) << "DSS ERROR: Copy object failed during rename op."
+                         << " Return status: " << s->err.ret
+                         << " Return HTTP code: " << s->err.http_ret
+                         << dendl;
+        s->err.ret = -ERR_RENAME_FAILED;
+        s->err.http_ret = 403;
+        return;
+    }
+    ldout(s->cct, 0) << "DSS INFO: Rename op: copy done" << dendl;
+
+    /* Tweek the request for a delete obj operation and perform delete op */
+    new_obj.dss_duplicate(&(s->object));
+    (s->object).dss_duplicate(&orig_object);
+    del_op = new RGWDeleteObj_ObjStore_S3;
+    delete_rgw_object(del_op);
+
+    if ((s->err.http_ret != 200) ||
+        (s->err.ret != 0)) {
+        ldout(s->cct, 0) << "DSS ERROR: Delete object failed during rename op. Attempting to revert copy op."
+                         << " Delete object Return status: " << s->err.ret
+                         << " Return HTTP code: " << s->err.http_ret
+                         << dendl;
+
+        /* Revert the copy op */
+        ret_orig = check_obj(s->object);
+        ret_newobj = check_obj(new_obj);
+        if (ret_orig < 0) {
+            // Delete failed but we don't have original object!!
+            if (ret_newobj < 0) {
+                // We are in a soup. Data lost. This is not the case we will ever end up in.
+                ldout(s->cct, 0) << "DSS ERROR: Data lost during rename operation!!" << dendl;
+                s->err.ret = -ERR_RENAME_DATA_LOST;
+                s->err.http_ret = 500;
+            } else {
+                // Everything normal
+                ldout(s->cct, 0) << "DSS INFO: Rename op: Why did we end up here?" << dendl;
+                s->err.http_ret = 200;
+                s->err.ret = 0;
+            }
+        } else {
+            if (ret_newobj >= 0) {
+                // Delete the new object
+                (s->object).dss_duplicate(&new_obj);
+                ndel_op = new RGWDeleteObj_ObjStore_S3;
+                delete_rgw_object(ndel_op);
+
+                if ((s->err.http_ret != 200) ||
+                    (s->err.ret != 0)) {
+                    ldout(s->cct, 0) << "DSS INFO: New object del failed. Status: "
+                                     << s->err.http_ret << " Ret: " << s->err.ret << dendl;
+                    s->err.ret = -ERR_RENAME_NEW_OBJ_DEL_FAILED;
+                    s->err.http_ret = 500;
+                } else {
+                    // Indicate that there has been a failure
+                    ldout(s->cct, 0) << "DSS INFO: Source object delete failed."
+                                     << "Cleaned up destination object to revert to original state." << dendl;
+                    s->err.ret = -ERR_RENAME_FAILED;
+                    s->err.http_ret = 403;
+                }
+            } else {
+                // Log major error. Ask user to file a bug. Why didn't copy fail?
+                ldout(s->cct, 0) << "DSS ERROR: Delete op failure handling: Copy operation did not fail" << dendl;
+                s->err.ret = -ERR_RENAME_COPY_FAILED;
+                s->err.http_ret = 500;
+            }
+        }
+        return;
+    }
+
+    ldout(s->cct, 0) << "DSS INFO: Rename op complete" << dendl;
+    return;
+}
+
+void RGWRenameObj::perform_external_op(RGWOp* bp)
+{
+    bool failure = false;
+    bp->init(store, s, dialect_handler);
+
+    ret = bp->init_processing();
+    if (ret < 0) {
+        failure = true;
+    } else {
+        ret = bp->verify_op_mask();
+    }
+    if (ret < 0) {
+        failure = true;
+    } else {
+        ret = bp->verify_permission();
+    }
+    if (ret < 0) {
+        failure = true;
+    } else {
+        ret = bp->verify_params();
+    }
+    if (ret < 0) {
+        failure = true;
+    }
+
+    if (!failure) {
+        s->system_request = true;
+        bp->pre_exec();
+        bp->execute();
+        s->system_request = false;
+        s->err.ret = bp->get_request_state()->err.ret;
+        s->err.http_ret = bp->get_request_state()->err.http_ret;
+    } else {
+        s->err.ret = ret;
+    }
+    s->err.ret = bp->get_request_state()->err.ret;
+    s->err.http_ret = bp->get_request_state()->err.http_ret;
+}
+
+int RGWRenameObj::check_obj(rgw_obj_key& object)
+{
+    rgw_obj lobj(s->bucket, object);
+    RGWObjectCtx obj_ctx(store);
+    RGWObjState *ros = NULL;
+
+    ret = store->get_obj_state(&obj_ctx, lobj, &ros, NULL);
+    if (ret < 0) {
+        ldout(s->cct, 0) << "DSS ERROR: Failed to fetch obj state" << dendl;
+        return ret;
+    }
+
+    if (!ros->exists) {
+        ldout(s->cct, 0) << "DSS ERROR: The object " << object.name << " does not exist." << dendl;
+        return -ENOENT;
+    }
+    return 0;
+}
+
+void RGWRenameObj::delete_rgw_object(RGWOp* del_op)
+{
+    ldout(s->cct, 0) << "DSS INFO: Deleting object. s->object.name: "
+                     << (s->object).name << dendl;
+    s->err.http_ret = 200;
+    s->err.ret = 0;
+    perform_external_op(del_op);
+    return;
+}
+
+string RGWRenameObj::get_raw_copy_source()
+{
+    string uri = s->info.request_uri;
+    int start = uri.find('/');
+    int end = uri.find('?');
+    string raw_copy_source = uri.substr(start+1, end);
+    return raw_copy_source;
+}
+

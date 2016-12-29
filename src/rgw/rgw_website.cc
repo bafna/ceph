@@ -1,3 +1,17 @@
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
+// vim: ts=8 sw=2 smarttab
+/*
+ * Ceph - scalable distributed file system
+ *
+ * Copyright (C) 2015 Yehuda Sadeh <yehuda@redhat.com>
+ * Copyright (C) 2015 Robin H. Johnson <robin.johnson@dreamhost.com>
+ *
+ * This is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License version 2.1, as published by the Free Software 
+ * Foundation.  See file COPYING.
+ * 
+ */
 #include "common/debug.h"
 #include "common/ceph_json.h"
 
@@ -80,7 +94,7 @@ bool RGWBucketWebsiteConf::should_redirect(const string& key, const int http_err
   if(!redirect_all.hostname.empty()) {
 	RGWBWRoutingRule redirect_all_rule;
 	redirect_all_rule.redirect_info.redirect = redirect_all;
-	redirect_all.http_redirect_code = 302;
+	redirect_all.http_redirect_code = 301;
 	*redirect = redirect_all_rule;
 	return true;
   } else if (!routing_rules.check_key_and_error_code_condition(key, http_error_code, &rule)) {

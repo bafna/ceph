@@ -16,6 +16,10 @@
 #include "rgw_log.h"
 #include "rgw_metadata.h"
 #include "rgw_rest_conn.h"
+#include <openssl/conf.h>
+#include <openssl/evp.h>
+#include <openssl/err.h>
+#include <string.h>
 
 class RGWWatcher;
 class SafeTimer;
@@ -1317,89 +1321,6 @@ public:
     zone_name = name;
   }
 
-
-  /* Holds info on whether the request should be
-   * validated via EC2 signature or Auth tokens.
-   * Holds value when the action is COPY
-   * Holds value when the token to be validated is from a presigned URL */
-/*
-  class authorization_method {
-      private:
-          bool _token_validation;
-          bool _copy_action;
-          bool _url_type_token;
-          bool _acl_main_override;
-          bool _acl_copy_override;
-          string _token;
-          string _copy_source;
-
-      public:
-          inline bool get_token_validation()
-          {
-              return _token_validation;
-          }
-          inline void set_token_validation(bool method)
-          {
-              _token_validation = method;
-          }
-          inline string get_token()
-          {
-              return _token;
-          }
-          inline void set_token(string tok)
-          {
-              _token = tok;
-          }
-          inline bool get_copy_action()
-          {
-              return _copy_action;
-          }
-          inline void set_copy_action(bool action)
-          {
-              _copy_action = action;
-          }
-          inline string get_copy_source()
-          {
-              return _copy_source;
-          }
-          inline void set_copy_source(string source)
-          {
-              _copy_source = source;
-          }
-          inline bool get_url_type_token()
-          {
-              return _url_type_token;
-          }
-          inline void set_url_type_token(bool val)
-          {
-              _url_type_token = val;
-          }
-          inline bool get_acl_main_override()
-          {
-              return _acl_main_override;
-          }
-          inline void set_acl_main_override(bool val)
-          {
-              _acl_main_override = val;
-          }
-          inline bool get_acl_copy_override()
-          {
-              return _acl_copy_override;
-          }
-          inline void set_acl_copy_override(bool val)
-          {
-              _acl_copy_override = val;
-          }
-
-
-          authorization_method(bool method, bool action, bool url_token) :
-              _token_validation(method),
-              _copy_action(action),
-              _url_type_token(url_token) { }
-          ~authorization_method() { }
-  } auth_method;
-  */
-
   RGWRegion region;
   RGWZoneParams zone; /* internal zone params, e.g., rados pools */
   RGWZone zone_public_config; /* external zone params, e.g., entrypoints, log flags, etc. */
@@ -2403,6 +2324,7 @@ public:
     entries.clear();
   }
 };
+class RGWKmsData;
 
 class RGWPutObjProcessor
 {
@@ -2419,7 +2341,7 @@ protected:
 public:
   RGWPutObjProcessor(RGWObjectCtx& _obj_ctx, RGWBucketInfo& _bi) : store(NULL), obj_ctx(_obj_ctx), is_complete(false), bucket_info(_bi) {}
   virtual ~RGWPutObjProcessor() {}
-  virtual int prepare(RGWRados *_store, string *oid_rand) {
+  virtual int prepare(RGWRados *_store, string *oid_rand, RGWKmsData** kmsdata = NULL) {
     store = _store;
     return 0;
   }
@@ -2534,7 +2456,7 @@ public:
                                 bucket(_b),
                                 obj_str(_o),
                                 unique_tag(_t) {}
-  int prepare(RGWRados *store, string *oid_rand);
+  int prepare(RGWRados *store, string *oid_rand, RGWKmsData** kmsdata = NULL);
   virtual bool immutable_head() { return false; }
   void set_extra_data_len(uint64_t len) {
     extra_data_len = len;
@@ -2551,5 +2473,21 @@ public:
     version_id = vid;
   }
 };
+
+class RGWKmsData {
+  public:
+  string key_dec;
+  string iv_dec;
+  string key_enc;
+  string iv_enc;
+  string mkey_enc;
+  int decode_json_enc(bufferlist& bl, CephContext *cct);
+  int decode_json_dec(bufferlist& bl, CephContext *cct);
+
+};
+
+int encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *key, unsigned char *iv, unsigned char *ciphertext);
+
+int decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *key,unsigned char *iv, unsigned char *plaintext);
 
 #endif

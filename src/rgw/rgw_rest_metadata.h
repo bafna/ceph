@@ -39,7 +39,7 @@ public:
 };
 
 class RGWOp_Metadata_Put : public RGWRESTOp {
-  int get_data(bufferlist& bl);
+  int get_data(bufferlist& bl,MD5* hash= NULL);
   string update_status;
   obj_version ondisk_version;
 public:

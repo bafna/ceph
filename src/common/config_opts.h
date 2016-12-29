@@ -966,6 +966,8 @@ OPTION(rgw_swift_auth_entry, OPT_STR, "auth")  // entry point for which a url is
 OPTION(rgw_swift_tenant_name, OPT_STR, "")  // tenant name to use for swift access
 OPTION(rgw_swift_enforce_content_length, OPT_BOOL, false)  // enforce generation of Content-Length even in cost of performance or scalability
 OPTION(rgw_keystone_url, OPT_STR, "")  // url for keystone server
+OPTION(rgw_kms_encrypt_url, OPT_STR, "")  // url for kms encrypt
+OPTION(rgw_kms_decrypt_url, OPT_STR, "")  // url for kms decrypt
 OPTION(rgw_keystone_admin_token, OPT_STR, "")  // keystone admin token (shared secret)
 OPTION(rgw_keystone_admin_user, OPT_STR, "")  // keystone admin user name
 OPTION(rgw_keystone_admin_password, OPT_STR, "")  // keystone admin user password
@@ -1064,7 +1066,7 @@ OPTION(rgw_user_max_buckets, OPT_U32, 1000) // global option to set max buckets 
 OPTION(rgw_enable_cors_response_headers, OPT_BOOL, true) // send cors response headers in case of a token based request
 OPTION(rgw_cors_allowed_origin, OPT_STR, "https://console.jiocloudservices.com, http://console.jiocloudservices.com, http://consolepreprod.jiocloudservices.com, https://consolepreprod.jiocloudservices.com, http://console.staging.jiocloudservices.com, https://console.staging.jiocloudservices.com")// cors allowed domains
 OPTION(rgw_cors_allowed_methods, OPT_STR, "GET, PUT, HEAD, POST, DELETE, COPY, OPTIONS") // cors allowed methods
-OPTION(rgw_cors_allowed_headers, OPT_STR, "X-Auth-Token, Content-Disposition, Content-Type") // cors allowed headers
+OPTION(rgw_cors_allowed_headers, OPT_STR, "X-Auth-Token, Content-Disposition, Content-Type, X-Jcs-Server-Side-Encryption") // cors allowed headers
 OPTION(rgw_cors_exposed_headers, OPT_STR, "ETag") // cors explicitely exposed headers
 OPTION(rgw_cors_content_disposition_header, OPT_STR, "Content-Disposition") // cors content disposition HEADER
 OPTION(rgw_cors_content_disposition_header_value, OPT_STR, "attachment") // cors content disposition HEADER value
@@ -1078,6 +1080,9 @@ OPTION(rgw_keystone_token_api, OPT_STR, "v3/token-auth")  // api to validate tok
 OPTION(rgw_keystone_url_token_api, OPT_STR, "url-auth")   // api to validate presigned token URL based authentication requests
 OPTION(rgw_keystone_infinite_url_token_api, OPT_STR, "preauth-token-auth")   // api to validate infinite time presigned token URL
 OPTION(dss_regional_url, OPT_STR, "https://dss.ind-west-1.staging.jiocloudservices.com") // URL to be returned in XMLNS during anonymous list all buckets calls
+OPTION(rgw_enable_rename_op, OPT_BOOL, true)                    // Enable the atomic rename op
+
+OPTION(rgw_enable_static_website, OPT_BOOL, false) // enable static website feature
 
 OPTION(mutex_perf_counter, OPT_BOOL, false) // enable/disable mutex perf counter
 OPTION(throttler_perf_counter, OPT_BOOL, true) // enable/disable throttler perf counter

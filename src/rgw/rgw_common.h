@@ -4,6 +4,7 @@
  * Ceph - scalable distributed file system
  *
  * Copyright (C) 2004-2009 Sage Weil <sage@newdream.net>
+ * Copyright (C) 2015 Yehuda Sadeh <yehuda@redhat.com>
  *
  * This is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -51,13 +52,16 @@ using ceph::crypto::MD5;
 #define RGW_HTTP_RGWX_ATTR_PREFIX "RGWX_ATTR_"
 #define RGW_HTTP_RGWX_ATTR_PREFIX_OUT "Rgwx-Attr-"
 
-#define RGW_AMZ_PREFIX "x-amz-"
+#define RGW_AMZ_PREFIX "x-jcs-"
 #define RGW_AMZ_META_PREFIX RGW_AMZ_PREFIX "x-jcs-meta-"
 #define RGW_AMZ_WEBSITE_REDIRECT_LOCATION RGW_AMZ_PREFIX "website-redirect-location"
 
 #define RGW_SYS_PARAM_PREFIX "rgwx-"
 
 #define RGW_ATTR_ACL		RGW_ATTR_PREFIX "acl"
+#define RGW_ATTR_KEY    RGW_ATTR_PREFIX "key"
+#define RGW_ATTR_IV     RGW_ATTR_PREFIX "iv"
+#define RGW_ATTR_MKEYVERSION   RGW_ATTR_PREFIX "mkeyversion"
 #define RGW_ATTR_CORS		RGW_ATTR_PREFIX "cors"
 #define RGW_ATTR_ETAG    	RGW_ATTR_PREFIX "etag"
 #define RGW_ATTR_BUCKETS	RGW_ATTR_PREFIX "buckets"
@@ -98,11 +102,8 @@ using ceph::crypto::MD5;
 
 #define RGW_REST_SWIFT          0x1
 #define RGW_REST_SWIFT_AUTH     0x2
-
-#define RGW_PROTO_SWIFT          0x1
-#define RGW_PROTO_SWIFT_AUTH     0x2
-#define RGW_PROTO_S3             0x4
-#define RGW_PROTO_WEBSITE     0x8
+#define RGW_REST_S3             0x4
+#define RGW_REST_WEBSITE     0x8
 
 #define RGW_SUSPENDED_USER_AUID (uint64_t)-2
 
@@ -156,10 +157,18 @@ using ceph::crypto::MD5;
 #define ERR_SIGNATURE_NO_MATCH   2027
 #define ERR_INVALID_ACCESS_KEY   2028
 #define ERR_BUCKET_ALREADY_OWNED 2029
-#define ERR_MALFORMED_XML        2030
-#define ERR_USER_EXIST           2031
-#define ERR_WEBSITE_REDIRECT     2032
-#define ERR_NO_SUCH_WEBSITE_CONFIGURATION 2033
+#define ERR_BAD_RENAME_REQ       2030
+#define ERR_RENAME_NOT_ENABLED   2031
+#define ERR_RENAME_FAILED        2032
+#define ERR_RENAME_DATA_LOST     2033
+#define ERR_RENAME_COPY_FAILED   2034
+#define ERR_RENAME_NEW_OBJ_DEL_FAILED     2035
+#define ERR_RENAME_OBJ_EXISTS    2036
+#define ERR_INVALID_ENC_ALGO     2037 
+#define ERR_MALFORMED_XML        2038
+#define ERR_USER_EXIST           2039
+#define ERR_WEBSITE_REDIRECT     2040
+#define ERR_NO_SUCH_WEBSITE_CONFIGURATION 2041
 #define ERR_USER_SUSPENDED       2100
 #define ERR_INTERNAL_ERROR       2200
 
@@ -974,6 +983,11 @@ struct rgw_obj_key {
   void transform(cls_rgw_obj_key *k) {
     k->name = name;
     k->instance = instance;
+  }
+
+  void dss_duplicate(rgw_obj_key* k) {
+    name = k->name;
+    instance = k->instance;
   }
 
   void set(const string& n) {

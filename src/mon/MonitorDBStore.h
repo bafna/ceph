@@ -23,7 +23,7 @@
 #include "os/KeyValueDB.h"
 
 #include "include/assert.h"
-#include "common/JSONFormatter.h"
+#include "common/Formatter.h"
 #include "common/Finisher.h"
 #include "common/errno.h"
 

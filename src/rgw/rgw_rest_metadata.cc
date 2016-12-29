@@ -104,7 +104,7 @@ void RGWOp_Metadata_List::execute() {
   http_ret = 0;
 }
 
-int RGWOp_Metadata_Put::get_data(bufferlist& bl) {
+int RGWOp_Metadata_Put::get_data(bufferlist& bl,MD5* hash) {
   size_t cl = 0;
   char *data;
   int read_len;

@@ -1,3 +1,16 @@
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// vim: ts=8 sw=2 smarttab
+/*
+ * Ceph - scalable distributed file system
+ *
+ * Copyright (C) 2015 Robin H. Johnson <robin.johnson@dreamhost.com>
+ *
+ * This is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License version 2.1, as published by the Free Software 
+ * Foundation.  See file COPYING.
+ * 
+ */
 #ifndef CEPH_RGW_REST_S3WEBSITE_H
 #define CEPH_RGW_REST_S3WEBSITE_H
  
@@ -19,7 +32,7 @@ protected:
   RGWOp *op_copy() { return NULL; }
   RGWOp *op_options() { return NULL; }
 
-  int get_errordoc(const string errordoc_key, string *error_content);
+  int serve_errordoc(int http_ret, const string &errordoc_key);
 public:
   RGWHandler_ObjStore_S3Website() : RGWHandler_ObjStore_S3() {}
   virtual ~RGWHandler_ObjStore_S3Website() {}
@@ -56,12 +69,15 @@ public:
 // TODO: do we actually need this?
 class  RGWGetObj_ObjStore_S3Website : public RGWGetObj_ObjStore_S3
 {
+  friend class RGWHandler_REST_S3Website;
 private:
    bool is_errordoc_request;
 public:
   RGWGetObj_ObjStore_S3Website() : is_errordoc_request(false) {}
   RGWGetObj_ObjStore_S3Website(bool is_errordoc_request) : is_errordoc_request(false) { this->is_errordoc_request = is_errordoc_request; }
   ~RGWGetObj_ObjStore_S3Website() {}
+  int send_response_data_error();
+  int send_response_data(bufferlist& bl, off_t ofs, off_t len);
   // We override RGWGetObj_ObjStore::get_params here, to allow ignoring all
   // conditional params for error pages.
   int get_params() {
@@ -71,7 +87,7 @@ public:
         if_unmod = NULL;
         if_match = NULL;
         if_nomatch = NULL;
-		return 0;
+        return 0;
       } else {
         return RGWGetObj_ObjStore_S3::get_params();
       }

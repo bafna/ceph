@@ -46,6 +46,10 @@ const static struct rgw_http_errors RGW_HTTP_ERRORS[] = {
     { ERR_USER_SUSPENDED, 403, "UserSuspended" },
     { ERR_REQUEST_TIME_SKEWED, 403, "RequestTimeTooSkewed" ,"The difference between the request time and the server's time is too large."},
     { ERR_QUOTA_EXCEEDED, 403, "QuotaExceeded" },
+    { ERR_BAD_RENAME_REQ, 403, "BadRenameRequest", "Rename request must have object name, new object name and the HTTP method should be PUT."},
+    { ERR_RENAME_NOT_ENABLED, 403, "RenameDisabled", "Rename operation is not enabled"},
+    { ERR_RENAME_FAILED, 403, "RenameFailed", "Rename operation has failed."},
+    { ERR_RENAME_OBJ_EXISTS, 403, "ObjectExists", "Rename operation cannot continue as the target object already exists."},
     { ENOENT, 404, "NoSuchKey", "Resource not found."},
     { ERR_NO_SUCH_BUCKET, 404, "NoSuchBucket", "Resource not found"},
     { ERR_NO_SUCH_UPLOAD, 404, "NoSuchUpload", "The specified multipart upload does not exist. The upload ID might be invalid, or the multipart upload might have been aborted or completed."},
@@ -61,6 +65,10 @@ const static struct rgw_http_errors RGW_HTTP_ERRORS[] = {
     { ERR_UNPROCESSABLE_ENTITY, 422, "UnprocessableEntity" },
     { ERR_LOCKED, 423, "Locked" },
     { ERR_INTERNAL_ERROR, 500, "InternalError", "We encountered an internal error. Please try again." },
+    { ERR_RENAME_COPY_FAILED, 500, "RenameFailed", "Object copy failed during rename. Please file a bug." },
+    { ERR_RENAME_DATA_LOST, 500, "DataLost", "Rename operation lost the original data. Please file a bug." },
+    { ERR_RENAME_NEW_OBJ_DEL_FAILED, 500, "RenameFailed", "Rename operation failed. Please delete the duplicated object with name same as new name for the object, manually. Please file a bug." },
+    {ERR_INVALID_ENC_ALGO, 400, "InvalidEncryptionAlgorithmError", "The encryption request you specified is not valid. The valid value is AES256." },
 };
 
 const static struct rgw_http_errors RGW_HTTP_SWIFT_ERRORS[] = {

@@ -1089,7 +1089,7 @@ int RGWPutObjProcessor_Atomic::handle_data(bufferlist& bl, off_t ofs, MD5 *hash,
     first_chunk.claim(bl);
     obj_len = (uint64_t)first_chunk.length();
     if (hash) {
-      hash->Update((const byte *)first_chunk.c_str(), obj_len);
+      //hash->Update((const byte *)first_chunk.c_str(), obj_len);
     }
     int r = prepare_next_part(obj_len);
     if (r < 0) {
@@ -1106,7 +1106,7 @@ int RGWPutObjProcessor_Atomic::handle_data(bufferlist& bl, off_t ofs, MD5 *hash,
   int ret = write_data(bl, write_ofs, phandle, exclusive);
   if (ret >= 0) { /* we might return, need to clear bl as it was already sent */
     if (hash) {
-      hash->Update((const byte *)bl.c_str(), bl.length());
+      //hash->Update((const byte *)bl.c_str(), bl.length());
     }
     bl.clear();
   }
@@ -1115,7 +1115,7 @@ int RGWPutObjProcessor_Atomic::handle_data(bufferlist& bl, off_t ofs, MD5 *hash,
 
 void RGWPutObjProcessor_Atomic::complete_hash(MD5 *hash)
 {
-  hash->Update((const byte *)pending_data_bl.c_str(), pending_data_bl.length());
+  //hash->Update((const byte *)pending_data_bl.c_str(), pending_data_bl.length());
 }
 
 
@@ -1131,7 +1131,7 @@ int RGWPutObjProcessor_Atomic::prepare_init(RGWRados *store, string *oid_rand)
   return 0;
 }
 
-int RGWPutObjProcessor_Atomic::prepare(RGWRados *store, string *oid_rand)
+int RGWPutObjProcessor_Atomic::prepare(RGWRados *store, string *oid_rand, RGWKmsData** kmsdata) 
 {
   int r = prepare_init(store, oid_rand);
   if (r < 0) {
@@ -9012,4 +9012,128 @@ librados::Rados* RGWRados::get_rados_handle()
     }
   }
 }
+
+int encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *key,
+  unsigned char *iv, unsigned char *ciphertext)
+{
+  EVP_CIPHER_CTX *ctx;
+
+  int len;
+
+  int ciphertext_len;
+
+  /* Create and initialise the context */
+  if(!(ctx = EVP_CIPHER_CTX_new())) 
+    return -1;
+  /* Initialise the encryption operation. IMPORTANT - ensure you use a key
+   * and IV size appropriate for your cipher
+   * In this example we are using 256 bit AES (i.e. a 256 bit key). The
+   * IV size for *most* modes is the same as the block size. For AES this
+   * is 128 bits */
+  if(1 != EVP_EncryptInit_ex(ctx, EVP_aes_256_xts(), NULL, key, iv))
+   return -1; 
+
+  /* Provide the message to be encrypted, and obtain the encrypted output.
+   * EVP_EncryptUpdate can be called multiple times if necessary
+   */
+  if(1 != EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len))
+    return -1;
+  ciphertext_len = len;
+
+  /* Finalise the encryption. Further ciphertext bytes may be written at
+   * this stage.
+   */
+  if(1 != EVP_EncryptFinal_ex(ctx, ciphertext + len, &len))
+   return -1; 
+  ciphertext_len += len;
+
+  /* Clean up */
+  EVP_CIPHER_CTX_free(ctx);
+
+  return ciphertext_len;
+}
+
+int decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *key,
+  unsigned char *iv, unsigned char *plaintext)
+{
+  EVP_CIPHER_CTX *ctx;
+
+  int len;
+
+  int plaintext_len;
+
+  /* Create and initialise the context */
+  if(!(ctx = EVP_CIPHER_CTX_new()))
+   return -1; 
+
+  /* Initialise the decryption operation. IMPORTANT - ensure you use a key
+   * and IV size appropriate for your cipher
+   * In this example we are using 256 bit AES (i.e. a 256 bit key). The
+   * IV size for *most* modes is the same as the block size. For AES this
+   * is 128 bits */
+  if(1 != EVP_DecryptInit_ex(ctx, EVP_aes_256_xts(), NULL, key, iv))
+   return -1; 
+
+  /* Provide the message to be decrypted, and obtain the plaintext output.
+   * EVP_DecryptUpdate can be called multiple times if necessary
+   */
+  if(1 != EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, ciphertext_len))
+   return -1; 
+  plaintext_len = len;
+
+  /* Finalise the decryption. Further plaintext bytes may be written at
+   * this stage.
+   */
+  if(1 != EVP_DecryptFinal_ex(ctx, plaintext + len, &len))
+   return -1; 
+  plaintext_len += len;
+
+  /* Clean up */
+  EVP_CIPHER_CTX_free(ctx);
+
+  return plaintext_len;
+}
+
+int RGWKmsData::decode_json_enc(bufferlist& bl, CephContext *cct)
+{
+  JSONParser parser; 
+
+  if (!parser.parse(bl.c_str(), bl.length())) {
+    ldout(cct, 0) << "Keystone token parse error: malformed json" << dendl;
+    return -EINVAL;
+  }
+ try {
+    JSONDecoder::decode_json("KMS_RAW_DATA_IV", iv_dec, &parser, true);
+    JSONDecoder::decode_json("KMS_ENCRYPTED_DATA_IV", iv_enc, &parser, true);
+    JSONDecoder::decode_json("KMS_ENCRYPTED_DATA_KEY", key_enc, &parser, true);
+    JSONDecoder::decode_json("KMS_RAW_DATA_KEY", key_dec, &parser, true);
+    JSONDecoder::decode_json("KMS_ENCRYPTED_MK_VERSION", mkey_enc , &parser, true);
+
+  } catch (JSONDecoder::err& err) {
+    ldout(cct, 0) << "KMS token parse error: " << err.message << dendl;
+    return -EINVAL;
+  }
+
+  return 0;
+}
+
+int RGWKmsData::decode_json_dec(bufferlist& bl, CephContext *cct)
+{
+  JSONParser parser; 
+
+  if (!parser.parse(bl.c_str(), bl.length())) {
+    ldout(cct, 0) << "KMS token parse error: malformed json" << dendl;
+    return -EINVAL;
+  }
+ try {
+    JSONDecoder::decode_json("KMS_RAW_DATA_IV", iv_dec, &parser, true);
+    JSONDecoder::decode_json("KMS_RAW_DATA_KEY", key_dec, &parser, true);
+
+  } catch (JSONDecoder::err& err) {
+    ldout(cct, 0) << "KMS token parse error: " << err.message << dendl;
+    return -EINVAL;
+  }
+  return 0;
+}
+
 
