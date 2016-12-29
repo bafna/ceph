@@ -141,7 +141,7 @@ public:
 
   virtual std::ostream& dump(std::ostream& o) const {
     o << get_action_name() << ": ";
-    ceph::JSONFormatter formatter(false);
+    JSONFormatter formatter(false);
     formatter.open_object_section("");
     m_action.dump(&formatter);
     formatter.close_section();

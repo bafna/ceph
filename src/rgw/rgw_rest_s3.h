@@ -20,11 +20,17 @@ void rgw_get_errno_s3(struct rgw_http_errors *e, int err_no);
 
 class RGWGetObj_ObjStore_S3 : public RGWGetObj_ObjStore
 {
+protected:
+  // Serving a custom error page from an object is really a 200 response with
+  // just the status line altered.
+  int custom_http_ret = 0;
 public:
   RGWGetObj_ObjStore_S3() {}
   ~RGWGetObj_ObjStore_S3() {}
 
+  int send_response_data_error();
   int send_response_data(bufferlist& bl, off_t ofs, off_t len);
+  void set_custom_http_response(int http_ret) { custom_http_ret = http_ret; }
 };
 
 class RGWListBuckets_ObjStore_S3 : public RGWListBuckets_ObjStore {
@@ -83,6 +89,31 @@ public:
   ~RGWSetBucketVersioning_ObjStore_S3() {}
 
   int get_params();
+  void send_response();
+};
+
+class RGWGetBucketWebsite_ObjStore_S3 : public RGWGetBucketWebsite {
+public:
+  RGWGetBucketWebsite_ObjStore_S3() {}
+  ~RGWGetBucketWebsite_ObjStore_S3() {}
+
+  void send_response();
+};
+
+class RGWSetBucketWebsite_ObjStore_S3 : public RGWSetBucketWebsite {
+public:
+  RGWSetBucketWebsite_ObjStore_S3() {}
+  ~RGWSetBucketWebsite_ObjStore_S3() {}
+
+  int get_params();
+  void send_response();
+};
+
+class RGWDeleteBucketWebsite_ObjStore_S3 : public RGWDeleteBucketWebsite {
+public:
+  RGWDeleteBucketWebsite_ObjStore_S3() {}
+  ~RGWDeleteBucketWebsite_ObjStore_S3() {}
+
   void send_response();
 };
 
@@ -352,6 +383,7 @@ public:
   int validate_request(const string& action,
                        const string& resource_name,
                        const string& tenant_name,
+                       const string& source_ip,
                        const bool&   is_sign_auth,
                        const bool&   is_copy,
                        const bool&   is_cross_account,
@@ -407,6 +439,10 @@ public:
   virtual int init(RGWRados *store, struct req_state *state, RGWClientIO *cio);
   virtual int authorize() {
     return RGW_Auth_S3::authorize(store, s);
+  }
+  virtual int retarget(RGWOp *op, RGWOp **new_op) {
+    *new_op = op;
+    return 0;
   }
 };
 
@@ -471,8 +507,10 @@ public:
 };
 
 class RGWRESTMgr_S3 : public RGWRESTMgr {
+private:
+  bool enable_s3website;
 public:
-  RGWRESTMgr_S3() {}
+  RGWRESTMgr_S3(bool enable_s3website) : enable_s3website(false) { this->enable_s3website = enable_s3website; }
   virtual ~RGWRESTMgr_S3() {}
 
   virtual RGWRESTMgr *get_resource_mgr(struct req_state *s, const string& uri) {
@@ -642,4 +680,6 @@ class dss_endpoint {
         dss_endpoint() { }
         ~dss_endpoint() { }
 };
+class RGWHandler_ObjStore_Obj_S3Website;
+
 #endif

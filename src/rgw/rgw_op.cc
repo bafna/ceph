@@ -340,7 +340,7 @@ static int read_policy(RGWRados *store, struct req_state *s,
  * only_bucket: If true, reads the bucket ACL rather than the object ACL.
  * Returns: 0 on success, -ERR# otherwise.
  */
-static int rgw_build_policies(RGWRados *store, struct req_state *s, bool only_bucket, bool prefetch_data)
+static int rgw_build_bucket_policies(RGWRados *store, struct req_state *s)
 {
   int ret = 0;
   rgw_obj_key obj;
@@ -423,9 +423,20 @@ static int rgw_build_policies(RGWRados *store, struct req_state *s, bool only_bu
     }
   }
 
-  /* we're passed only_bucket = true when we specifically need the bucket's
-     acls, that happens on write operations */
-  if (!only_bucket && !s->object.empty()) {
+  return ret;
+}
+
+/**
+ * Get the AccessControlPolicy for a bucket or object off of disk.
+ * s: The req_state to draw information from.
+ * only_bucket: If true, reads the bucket ACL rather than the object ACL.
+ * Returns: 0 on success, -ERR# otherwise.
+ */
+static int rgw_build_object_policies(RGWRados *store, struct req_state *s, bool prefetch_data)
+{
+  int ret = 0;
+
+  if (!s->object.empty()) {
     if (!s->bucket_exists) {
       return -ERR_NO_SUCH_BUCKET;
     }
@@ -858,18 +869,6 @@ int RGWGetObj::handle_user_manifest(const char *prefix)
   return 0;
 }
 
-class RGWGetObj_CB : public RGWGetDataCB
-{
-  RGWGetObj *op;
-public:
-  RGWGetObj_CB(RGWGetObj *_op) : op(_op) {}
-  virtual ~RGWGetObj_CB() {}
-
-  int handle_data(bufferlist& bl, off_t bl_ofs, off_t bl_len) {
-    return op->get_data_cb(bl, bl_ofs, bl_len);
-  }
-};
-
 int RGWGetObj::get_data_cb(bufferlist& bl, off_t bl_ofs, off_t bl_len)
 {
   /* garbage collection related handling */
@@ -888,6 +887,7 @@ int RGWGetObj::get_data_cb(bufferlist& bl, off_t bl_ofs, off_t bl_len)
 void RGWGetObj::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWGetObj::execute()
@@ -970,13 +970,19 @@ void RGWGetObj::execute()
   ret = read_op.iterate(ofs, end, &cb);
 
   perfcounter->tinc(l_rgw_get_lat,
-                   (ceph_clock_now(s->cct) - start_time));
+      (ceph_clock_now(s->cct) - start_time));
   if (ret < 0) {
     goto done_err;
   }
 
+  ret = send_response_data(bl, 0, 0);
+  if (ret < 0) {
+    goto done_err;
+  }
+  return;
+
 done_err:
-  send_response_data(bl, 0, 0);
+  send_response_data_error();
 
   if (kmsdata)
     delete kmsdata;
@@ -1113,6 +1119,7 @@ int RGWGetBucketVersioning::verify_permission()
 void RGWGetBucketVersioning::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWGetBucketVersioning::execute()
@@ -1132,6 +1139,7 @@ int RGWSetBucketVersioning::verify_permission()
 void RGWSetBucketVersioning::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWSetBucketVersioning::execute()
@@ -1155,6 +1163,84 @@ void RGWSetBucketVersioning::execute()
   }
 }
 
+int RGWGetBucketWebsite::verify_permission()
+{
+  if (s->user.user_id.compare(s->bucket_owner.get_id()) != 0)
+    return -EACCES;
+
+  return 0;
+}
+
+void RGWGetBucketWebsite::pre_exec()
+{
+  rgw_bucket_object_pre_exec(s);
+  ret = 0;
+}
+
+void RGWGetBucketWebsite::execute()
+{
+  if (!s->bucket_info.has_website) {
+    ret = -ENOENT;
+  }
+}
+
+int RGWSetBucketWebsite::verify_permission()
+{
+  if (s->user.user_id.compare(s->bucket_owner.get_id()) != 0)
+    return -EACCES;
+
+  return 0;
+}
+
+void RGWSetBucketWebsite::pre_exec()
+{
+  rgw_bucket_object_pre_exec(s);
+  ret = 0;
+}
+
+void RGWSetBucketWebsite::execute()
+{
+  ret = get_params();
+
+  if (ret < 0)
+    return;
+
+  s->bucket_info.has_website = true;
+  s->bucket_info.website_conf = website_conf;
+
+  ret = store->put_bucket_instance_info(s->bucket_info, false, 0, &s->bucket_attrs);
+  if (ret < 0) {
+    ldout(s->cct, 0) << "NOTICE: put_bucket_info on bucket=" << s->bucket.name << " returned err=" << ret << dendl;
+    return;
+  }
+}
+
+int RGWDeleteBucketWebsite::verify_permission()
+{
+  if (s->user.user_id.compare(s->bucket_owner.get_id()) != 0)
+    return -EACCES;
+
+  return 0;
+}
+
+void RGWDeleteBucketWebsite::pre_exec()
+{
+  rgw_bucket_object_pre_exec(s);
+  ret = 0;
+}
+
+void RGWDeleteBucketWebsite::execute()
+{
+  s->bucket_info.has_website = false;
+  s->bucket_info.website_conf = RGWBucketWebsiteConf();
+
+  ret = store->put_bucket_instance_info(s->bucket_info, false, 0, &s->bucket_attrs);
+  if (ret < 0) {
+    ldout(s->cct, 0) << "NOTICE: put_bucket_info on bucket=" << s->bucket.name << " returned err=" << ret << dendl;
+    return;
+  }
+}
+
 int RGWStatBucket::verify_permission()
 {
   if (!verify_bucket_permission(s, RGW_PERM_READ))
@@ -1166,6 +1252,7 @@ int RGWStatBucket::verify_permission()
 void RGWStatBucket::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWStatBucket::execute()
@@ -1218,6 +1305,7 @@ int RGWListBucket::parse_max_keys()
 void RGWListBucket::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWListBucket::execute()
@@ -1323,6 +1411,7 @@ void RGWCreateBucket::pre_exec()
     ret = dialect_handler->validate_bucket_name(s->bucket_name_str, s->cct->_conf->rgw_s3_bucket_name_create_strictness);
 
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWCreateBucket::execute()
@@ -1455,7 +1544,8 @@ void RGWCreateBucket::execute()
       ldout(s->cct, 0) << "WARNING: failed to unlink bucket: ret=" << ret << dendl;
     }
   } else if (ret == -EEXIST || (ret == 0 && existed)) {
-      ret = -ERR_BUCKET_EXISTS;
+    ret = 0;
+    exist_ret = -ERR_BUCKET_EXISTS;
   }
 }
 
@@ -1470,6 +1560,7 @@ int RGWDeleteBucket::verify_permission()
 void RGWDeleteBucket::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWDeleteBucket::execute()
@@ -1734,6 +1825,7 @@ void RGWPutObj::dispose_processor(RGWPutObjProcessor *processor)
 void RGWPutObj::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 static int put_data_and_throttle(RGWPutObjProcessor *processor, bufferlist& data, off_t ofs,
@@ -2061,6 +2153,7 @@ void RGWPostObj::dispose_processor(RGWPutObjProcessor *processor)
 void RGWPostObj::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWPostObj::execute()
@@ -2304,6 +2397,7 @@ int RGWDeleteObj::verify_permission()
 void RGWDeleteObj::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWDeleteObj::execute()
@@ -2351,7 +2445,6 @@ bool RGWCopyObj::parse_copy_location(const string& url_src, string& bucket_name,
 
 
   string dec_src;
-
   url_decode(name_str, dec_src);
   const char *src = dec_src.c_str();
 
@@ -2510,6 +2603,7 @@ void RGWCopyObj::progress_cb(off_t ofs)
 void RGWCopyObj::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWCopyObj::execute()
@@ -2568,6 +2662,7 @@ int RGWGetACLs::verify_permission()
 void RGWGetACLs::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWGetACLs::execute()
@@ -2598,6 +2693,7 @@ int RGWPutACLs::verify_permission()
 void RGWPutACLs::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWPutACLs::execute()
@@ -2863,6 +2959,7 @@ int RGWInitMultipart::verify_permission()
 void RGWInitMultipart::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWInitMultipart::execute()
@@ -3097,6 +3194,7 @@ int RGWCompleteMultipart::verify_permission()
 void RGWCompleteMultipart::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWCompleteMultipart::execute()
@@ -3296,6 +3394,7 @@ int RGWAbortMultipart::verify_permission()
 void RGWAbortMultipart::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWAbortMultipart::execute()
@@ -3397,6 +3496,7 @@ int RGWListMultipart::verify_permission()
 void RGWListMultipart::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWListMultipart::execute()
@@ -3430,6 +3530,7 @@ int RGWListBucketMultiparts::verify_permission()
 void RGWListBucketMultiparts::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWListBucketMultiparts::execute()
@@ -3490,6 +3591,7 @@ int RGWDeleteMultiObj::verify_permission()
 void RGWDeleteMultiObj::pre_exec()
 {
   rgw_bucket_object_pre_exec(s);
+  ret = 0;
 }
 
 void RGWDeleteMultiObj::execute()
@@ -3585,12 +3687,29 @@ int RGWHandler::init(RGWRados *_store, struct req_state *_s, RGWClientIO *cio)
   return 0;
 }
 
-int RGWHandler::do_read_permissions(RGWOp *op, bool only_bucket)
+int RGWHandler::do_init_permissions()
 {
-  int ret = rgw_build_policies(store, s, only_bucket, op->prefetch_data());
+  int ret = rgw_build_bucket_policies(store, s);
 
   if (ret < 0) {
-    ldout(s->cct, 10) << "read_permissions on " << s->bucket << ":" <<s->object << " only_bucket=" << only_bucket << " ret=" << ret << dendl;
+    ldout(s->cct, 10) << "read_permissions on " << s->bucket << " ret=" << ret << dendl;
+    if (ret == -ENODATA)
+      ret = -EACCES;
+  }
+
+  return ret;
+}
+
+int RGWHandler::do_read_permissions(RGWOp *op, bool only_bucket)
+{
+  if (only_bucket) {
+    /* already read bucket info */
+    return 0;
+  }
+  int ret = rgw_build_object_policies(store, s, op->prefetch_data());
+
+  if (ret < 0) {
+    ldout(s->cct, 10) << "read_permissions on " << s->bucket << ":" << s->object << " ret=" << ret << dendl;
     if (ret == -ENODATA)
       ret = -EACCES;
   }
@@ -3639,6 +3758,14 @@ void RGWHandler::put_op(RGWOp *op)
   delete op;
 }
 
+int RGWOp::error_handler(int err_no, string *error_content) {
+  return dialect_handler->error_handler(err_no, error_content);
+}
+
+int RGWHandler::error_handler(int err_no, string *error_content) {
+  // This is the do-nothing error handler
+  return err_no;
+}
 /* Object Rename operation */
 
 int RGWRenameObj::verify_permission()
@@ -3659,7 +3786,7 @@ void RGWRenameObj::execute()
     s->err.ret = 0;
     rgw_obj_key orig_object, new_obj;
     orig_object.dss_duplicate(&(s->object));
-    string copysource;
+    string copysource, raw_copy_source;
     int ret_orig, ret_newobj;
     RGWCopyObj_ObjStore_S3* copy_op = NULL;
     RGWDeleteObj_ObjStore_S3* del_op = NULL;
@@ -3682,7 +3809,7 @@ void RGWRenameObj::execute()
         s->err.ret = -ERR_RENAME_OBJ_EXISTS;
         return;
     }
-
+    raw_copy_source = get_raw_copy_source();
     copysource = s->bucket_name_str;
     copysource.append("/");
     copysource.append(orig_object.name);
@@ -3691,10 +3818,12 @@ void RGWRenameObj::execute()
     s->info.env->set("HTTP_X_JCS_COPY_SOURCE", copysource.c_str());
     s->info.env->set("HTTP_X_JCS_METADATA_DIRECTIVE", "COPY");
     s->copy_source = s->info.env->get("HTTP_X_JCS_COPY_SOURCE");
+    ldout(s->cct, 0) << "DSS INFO: The raw copy location to be parsed: " << raw_copy_source <<dendl;
     if (s->copy_source) {
-      ret = RGWCopyObj::parse_copy_location(s->copy_source, s->src_bucket_name, s->src_object);
+      ret = RGWCopyObj::parse_copy_location(raw_copy_source, s->src_bucket_name, s->src_object);
+      ldout(s->cct, 0) << "DSS INFO: final source key name: " << s->src_object << " and bucket name: " << s->src_bucket_name << dendl;
       if (!ret) { //Surprizingly returns bool
-        ldout(s->cct, 0) << "DSS INFO: Rename op failed to parse copy location" << dendl;
+        ldout(s->cct, 0) << "DSS ERROR: Rename op failed to parse copy location" << dendl;
         s->err.ret = -ERR_RENAME_FAILED;
         s->err.http_ret = 403;
         return;
@@ -3846,5 +3975,14 @@ void RGWRenameObj::delete_rgw_object(RGWOp* del_op)
     s->err.ret = 0;
     perform_external_op(del_op);
     return;
+}
+
+string RGWRenameObj::get_raw_copy_source()
+{
+    string uri = s->info.request_uri;
+    int start = uri.find('/');
+    int end = uri.find('?');
+    string raw_copy_source = uri.substr(start+1, end);
+    return raw_copy_source;
 }
 

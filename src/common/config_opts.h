@@ -948,13 +948,14 @@ OPTION(rgw_enable_quota_threads, OPT_BOOL, true)
 OPTION(rgw_enable_gc_threads, OPT_BOOL, true)
 
 OPTION(rgw_data, OPT_STR, "/var/lib/ceph/radosgw/$cluster-$id")
-OPTION(rgw_enable_apis, OPT_STR, "s3, admin") //<<<<<< DSS stopped swift
+OPTION(rgw_enable_apis, OPT_STR, "s3, s3website, admin")
 OPTION(rgw_cache_enabled, OPT_BOOL, true)   // rgw cache enabled
 OPTION(rgw_cache_lru_size, OPT_INT, 10000)   // num of entries in rgw cache
 OPTION(rgw_socket_path, OPT_STR, "")   // path to unix domain socket, if not specified, rgw will not run as external fcgi
 OPTION(rgw_host, OPT_STR, "")  // host for radosgw, can be an IP, default is 0.0.0.0
 OPTION(rgw_port, OPT_STR, "")  // port to listen, format as "8080" "5000", if not specified, rgw will not run external fcgi
-OPTION(rgw_dns_name, OPT_STR, "")
+OPTION(rgw_dns_name, OPT_STR, "") // hostname suffix on buckets
+OPTION(rgw_dns_s3website_name, OPT_STR, "") // hostname suffix on buckets for s3-website endpoint
 OPTION(rgw_content_length_compat, OPT_BOOL, false) // Check both HTTP_CONTENT_LENGTH and CONTENT_LENGTH in fcgi env
 OPTION(rgw_script_uri, OPT_STR, "") // alternative value for SCRIPT_URI if not set in request
 OPTION(rgw_request_uri, OPT_STR,  "") // alternative value for REQUEST_URI if not set in request
@@ -1080,6 +1081,8 @@ OPTION(rgw_keystone_url_token_api, OPT_STR, "url-auth")   // api to validate pre
 OPTION(rgw_keystone_infinite_url_token_api, OPT_STR, "preauth-token-auth")   // api to validate infinite time presigned token URL
 OPTION(dss_regional_url, OPT_STR, "https://dss.ind-west-1.staging.jiocloudservices.com") // URL to be returned in XMLNS during anonymous list all buckets calls
 OPTION(rgw_enable_rename_op, OPT_BOOL, true)                    // Enable the atomic rename op
+
+OPTION(rgw_enable_static_website, OPT_BOOL, false) // enable static website feature
 
 OPTION(mutex_perf_counter, OPT_BOOL, false) // enable/disable mutex perf counter
 OPTION(throttler_perf_counter, OPT_BOOL, true) // enable/disable throttler perf counter

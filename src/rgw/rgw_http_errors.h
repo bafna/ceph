@@ -20,6 +20,7 @@ const static struct rgw_http_errors RGW_HTTP_ERRORS[] = {
     { STATUS_NO_CONTENT, 204, "NoContent", "There was no need to send any content with this type of request" },
     { STATUS_PARTIAL_CONTENT, 206, "" },
     { ERR_PERMANENT_REDIRECT, 301, "PermanentRedirect" },
+    { ERR_WEBSITE_REDIRECT, 301, "WebsiteRedirect" },
     { STATUS_REDIRECT, 303, "" },
     { ERR_NOT_MODIFIED, 304, "NotModified" },
     { EINVAL, 400, "InvalidArgument", "Invalid Argument"},
@@ -57,6 +58,8 @@ const static struct rgw_http_errors RGW_HTTP_ERRORS[] = {
     { ETIMEDOUT, 408, "RequestTimeout", "Your socket connection to the server was not read from or written to within the timeout period."},
     { EEXIST, 409, "BucketAlreadyExists", "The requested bucket name is not available. Please select a different name and try again"},
     { ENOTEMPTY, 409, "BucketNotEmpty", "The bucket you tried to delete is not empty"},
+    { ERR_NO_SUCH_WEBSITE_CONFIGURATION, 404, "NoSuchWebsiteConfiguration" },
+    { ERR_USER_EXIST, 409, "UserAlreadyExists" },
     { ERR_PRECONDITION_FAILED, 412, "PreconditionFailed" },
     { ERANGE, 416, "InvalidRange", "The requested range cannot be satisfied."},
     { ERR_UNPROCESSABLE_ENTITY, 422, "UnprocessableEntity" },
@@ -65,6 +68,7 @@ const static struct rgw_http_errors RGW_HTTP_ERRORS[] = {
     { ERR_RENAME_COPY_FAILED, 500, "RenameFailed", "Object copy failed during rename. Please file a bug." },
     { ERR_RENAME_DATA_LOST, 500, "DataLost", "Rename operation lost the original data. Please file a bug." },
     { ERR_RENAME_NEW_OBJ_DEL_FAILED, 500, "RenameFailed", "Rename operation failed. Please delete the duplicated object with name same as new name for the object, manually. Please file a bug." },
+    {ERR_INVALID_ENC_ALGO, 400, "InvalidEncryptionAlgorithmError", "The encryption request you specified is not valid. The valid value is AES256." },
 };
 
 const static struct rgw_http_errors RGW_HTTP_SWIFT_ERRORS[] = {
@@ -91,6 +95,7 @@ const static struct rgw_http_status_code http_codes[] = {
   { 207, "Multi Status" },
   { 208, "Already Reported" },
   { 300, "Multiple Choices" },
+  { 301, "Moved Permanently" },
   { 302, "Found" },
   { 303, "See Other" },
   { 304, "Not Modified" },
